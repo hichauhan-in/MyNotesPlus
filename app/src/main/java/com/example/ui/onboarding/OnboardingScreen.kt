@@ -70,7 +70,7 @@ private val pages = listOf(
     OnboardingPage(
         icon = Icons.Rounded.Lock,
         title = "Encrypted by design",
-        subtitle = "Every note is locked with AES-256 on your device. No account, no tracking, no one reading over your shoulder.",
+        subtitle = "Note content is encrypted on your device. Optional Google tools may download models and send SDK diagnostics.",
     ),
     OnboardingPage(
         icon = Icons.Rounded.Checklist,
@@ -249,4 +249,3 @@ private fun OnboardingPageContent(page: OnboardingPage) {
         }
     }
 }
-

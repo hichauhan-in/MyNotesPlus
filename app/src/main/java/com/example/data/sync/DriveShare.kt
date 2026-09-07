@@ -3,6 +3,7 @@ package com.example.data.sync
 import com.example.data.export.ExportFormat
 import com.example.data.export.Exporter
 import com.example.domain.model.Note
+import com.example.domain.model.NoteType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -15,12 +16,18 @@ object DriveShare {
     private const val FOLDER_NAME = "MyNotes Shared"
 
     /** Uploads a copy of [note] as a Google Doc, makes it link-viewable, and returns the URL (or null). */
-    suspend fun createLink(accessToken: String, note: Note): String? = withContext(Dispatchers.IO) {
+    suspend fun createLink(accessToken: String, note: Note, publicShareConfirmed: Boolean = false): String? = withContext(Dispatchers.IO) {
+        if (!publicShareConfirmed || note.type == NoteType.EXPENSE) return@withContext null
         val folderId = DriveRest.ensureFolder(accessToken, FOLDER_NAME) ?: return@withContext null
         val html = String(Exporter.noteBytes(note, ExportFormat.HTML), Charsets.UTF_8)
         val name = Exporter.noteFileBase(note)
         val fileId = DriveRest.uploadSharedDoc(accessToken, folderId, name, html) ?: return@withContext null
-        DriveRest.setAnyoneReader(accessToken, fileId)
-        DriveRest.webViewLink(accessToken, fileId)
+        if (!DriveRest.setAnyoneReader(accessToken, fileId)) {
+            DriveRest.deleteFile(accessToken, fileId)
+            return@withContext null
+        }
+        val link = DriveRest.webViewLink(accessToken, fileId)
+        if (link == null) DriveRest.deleteFile(accessToken, fileId)
+        link
     }
 }

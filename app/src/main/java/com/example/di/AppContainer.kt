@@ -36,6 +36,7 @@ object AppContainer {
     var cloudSyncManager: CloudSyncManager? = null
         private set
 
+    @Synchronized
     fun init(context: Context) {
         if (database == null) {
             database = Room.databaseBuilder(
@@ -52,8 +53,6 @@ object AppContainer {
                     AppDatabase.MIGRATION_6_7,
                     AppDatabase.MIGRATION_7_8,
                 )
-                // Any other unknown schema jump: wipe & rebuild rather than crash.
-                .fallbackToDestructiveMigration(dropAllTables = true)
                 .build()
             noteRepository = NoteRepository(database!!.noteDao(), context.applicationContext)
             folderRepository = FolderRepository(database!!.folderDao(), database!!.noteDao(), context.applicationContext)

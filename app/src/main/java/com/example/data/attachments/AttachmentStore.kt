@@ -2,6 +2,7 @@ package com.example.data.attachments
 
 import android.content.Context
 import android.net.Uri
+import android.util.AtomicFile
 import android.util.LruCache
 import androidx.core.content.FileProvider
 import com.example.data.security.EncryptionManager
@@ -54,10 +55,16 @@ object AttachmentStore {
     /** Encrypts [bytes] and writes them to the named attachment file, refreshing the cache. */
     fun writeEncrypted(context: Context, name: String, bytes: ByteArray): Boolean = runCatching {
         val blob = EncryptionManager.encryptBytes(bytes)
-        val out = ByteArray(MAGIC.size + blob.size)
-        System.arraycopy(MAGIC, 0, out, 0, MAGIC.size)
-        System.arraycopy(blob, 0, out, MAGIC.size, blob.size)
-        fileFor(context, name).writeBytes(out)
+        val atomic = AtomicFile(fileFor(context, name))
+        val stream = atomic.startWrite()
+        try {
+            stream.write(MAGIC)
+            stream.write(blob)
+            atomic.finishWrite(stream)
+        } catch (failure: Exception) {
+            atomic.failWrite(stream)
+            throw failure
+        }
         cache.put(name, bytes)
         true
     }.getOrDefault(false)
@@ -69,8 +76,7 @@ object AttachmentStore {
     fun readDecrypted(context: Context, name: String): ByteArray? {
         cache.get(name)?.let { return it }
         val file = fileFor(context, name)
-        if (!file.exists()) return null
-        val raw = runCatching { file.readBytes() }.getOrNull() ?: return null
+        val raw = runCatching { AtomicFile(file).readFully() }.getOrNull() ?: return null
         val bytes = if (isEncrypted(raw)) {
             EncryptionManager.decryptBytes(raw.copyOfRange(MAGIC.size, raw.size)) ?: return null
         } else {
@@ -83,7 +89,7 @@ object AttachmentStore {
     /** Encrypts an already-written plaintext file (camera capture / voice recording) in place. */
     fun encryptFileInPlace(context: Context, name: String): Boolean {
         val file = fileFor(context, name)
-        val raw = runCatching { file.readBytes() }.getOrNull() ?: return false
+        val raw = runCatching { AtomicFile(file).readFully() }.getOrNull() ?: return false
         if (isEncrypted(raw)) return true
         return writeEncrypted(context, name, raw)
     }
@@ -97,12 +103,15 @@ object AttachmentStore {
             val d = dir(context)
             val marker = File(d, MIGRATION_MARKER)
             if (marker.exists()) return
+            var complete = true
             d.listFiles()?.forEach { f ->
                 // encryptFileInPlace reads the file and skips anything already encrypted, so this is
                 // safe and idempotent regardless of each file's current state.
-                if (f.isFile && f.name != MIGRATION_MARKER) encryptFileInPlace(context, f.name)
+                if (f.isFile && f.name != MIGRATION_MARKER && !f.name.endsWith(".bak") && !f.name.endsWith(".new")) {
+                    if (!encryptFileInPlace(context, f.name)) complete = false
+                }
             }
-            marker.writeText("1")
+            if (complete) marker.writeText("1")
         }
     }
 
@@ -123,6 +132,6 @@ object AttachmentStore {
 
     fun delete(context: Context, name: String) {
         cache.remove(name)
-        runCatching { fileFor(context, name).delete() }
+        runCatching { AtomicFile(fileFor(context, name)).delete() }
     }
 }

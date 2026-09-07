@@ -1,5 +1,7 @@
 package com.example.ui.settings
 
+import android.app.NotificationManager
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.settings.AppSettings
@@ -7,6 +9,7 @@ import com.example.data.sync.CloudSyncManager
 import com.example.data.sync.DriveRest
 import com.example.di.AppContainer
 import com.example.ui.theme.ThemeMode
+import com.example.widget.WidgetUpdater
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -64,8 +67,12 @@ class SettingsViewModel : ViewModel() {
         viewModelScope.launch { repository.setCloudSyncEnabled(value) }
     }
 
-    fun setAppLockEnabled(value: Boolean) {
-        viewModelScope.launch { repository.setAppLockEnabled(value) }
+    fun setAppLockEnabled(value: Boolean, context: Context) {
+        viewModelScope.launch {
+            repository.setAppLockEnabled(value)
+            if (value) context.getSystemService(NotificationManager::class.java)?.cancelAll()
+            WidgetUpdater.refreshAll(context.applicationContext)
+        }
     }
 
     fun setHideFromRecents(value: Boolean) {

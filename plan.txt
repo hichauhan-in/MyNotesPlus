@@ -1,0 +1,840 @@
+# ROLE
+
+You are a senior Android software architect, senior UX/UI designer, and principal Kotlin engineer with experience designing flagship productivity applications. Your goal is NOT to generate a prototype or mock-up, but to build a production-quality Android application with a polished architecture, premium UI/UX, proper interaction patterns, and scalable code.
+
+Do not simplify features.
+
+Do not remove functionality.
+
+Do not invent your own layout.
+
+Every screen should follow modern Android UX guidelines while maintaining a premium Neumorphic aesthetic.
+
+Every button, icon, animation, spacing, typography, and interaction should have a clear purpose.
+
+The application should feel like it was designed by Google's Material Design team together with Apple's Human Interface team.
+
+---
+
+# PROJECT
+
+Build a premium Android note-taking application named **Vault Notes**.
+
+This application is an offline-first, privacy-first, encrypted note-taking application where every piece of user data remains encrypted at rest.
+
+Cloud synchronization is optional and must upload only encrypted data.
+
+The developer must never be capable of reading user notes.
+
+Everything should work perfectly without internet.
+
+No login should ever be required unless the user explicitly enables Google Drive sync.
+
+The application should compete with:
+
+• Google Keep
+• Samsung Notes
+• Microsoft OneNote
+• Evernote
+• Obsidian
+• Joplin
+• Apple Notes
+• Notion (note features only)
+
+Take inspiration from the best UX of each without copying any one application.
+
+---
+
+# DESIGN PHILOSOPHY
+
+The UI is the highest priority.
+
+Do NOT generate generic Material templates.
+
+Do NOT create flat layouts.
+
+Do NOT place floating buttons randomly.
+
+Do NOT crowd the screen.
+
+Everything should look intentional.
+
+Every screen should be professionally designed.
+
+The application should immediately feel premium.
+
+The interface should communicate calmness, focus, and elegance.
+
+Design principles:
+
+• Soft Neumorphism
+• Material 3
+• Dynamic Colors
+• Proper Elevation
+• Consistent Corner Radius
+• Excellent White Space
+• Large Touch Targets
+• Smooth Micro Animations
+• Professional Typography
+• Responsive Layout
+• Consistent Iconography
+
+Avoid visual clutter.
+
+Never place more than one primary action on screen.
+
+Never hide common actions inside unnecessary menus.
+
+---
+
+# COLOR SYSTEM
+
+Provide:
+
+Light Theme
+
+Dark Theme
+
+System Theme
+
+Dynamic Material You Colors
+
+Custom Accent Color
+
+The UI should automatically adapt.
+
+Dark mode should not simply invert colors.
+
+Instead redesign shadows and elevations for dark surfaces.
+
+---
+
+# TYPOGRAPHY
+
+Use Material typography hierarchy.
+
+Large titles.
+
+Comfortable paragraph spacing.
+
+Readable line height.
+
+Editor should look similar to a premium writing application.
+
+---
+
+# HOME SCREEN
+
+This screen is the application's dashboard.
+
+Top App Bar:
+
+• Application Logo
+• Vault Notes
+• Search Icon
+• Settings Icon
+
+Below:
+
+Global Search Bar
+
+Horizontal chips:
+
+All
+
+Recent
+
+Favorites
+
+Pinned
+
+Folders
+
+Tags
+
+Archived
+
+Trash
+
+Below that:
+
+Pinned Notes Section
+
+Recent Notes Section
+
+Folders Section
+
+Templates Section
+
+Quick Actions Section
+
+Floating Action Button only for "Create Note"
+
+The FAB expands into:
+
+New Note
+
+Checklist
+
+Drawing
+
+Voice Note
+
+Scan Document
+
+Import
+
+The layout should intelligently adapt for phones, tablets, and foldables.
+
+---
+
+# NOTE CARD DESIGN
+
+Cards should contain:
+
+Title
+
+Preview
+
+Modified Date
+
+Folder
+
+Tags
+
+Favorite Indicator
+
+Pin Indicator
+
+Reminder Indicator
+
+Checklist Progress
+
+Thumbnail (if image exists)
+
+Cards should animate softly.
+
+Cards should support swipe gestures.
+
+Swipe Left:
+
+Archive
+
+Delete
+
+Swipe Right:
+
+Favorite
+
+Pin
+
+Long Press:
+
+Selection Mode
+
+---
+
+# NOTE EDITOR
+
+This is the most important screen.
+
+It must feel distraction-free.
+
+Top:
+
+Back
+
+Title
+
+Save Status
+
+Search
+
+More Menu
+
+Below:
+
+Rich Editor
+
+Floating Formatting Toolbar
+
+Bottom Toolbar
+
+The editor should support:
+
+Plain Text
+
+Markdown
+
+Rich Text
+
+Headers
+
+Bold
+
+Italic
+
+Underline
+
+Highlight
+
+Quote
+
+Checklist
+
+Numbered List
+
+Bullet List
+
+Tables
+
+Images
+
+Voice
+
+Drawing
+
+Code Blocks
+
+Links
+
+Horizontal Divider
+
+Date
+
+Time
+
+Emoji
+
+Attachments
+
+Drag-and-drop images
+
+Inline checklists
+
+Nested checklists
+
+Automatic save every few seconds.
+
+Undo/Redo unlimited.
+
+Word Count
+
+Character Count
+
+Reading Time
+
+Estimated Speaking Time
+
+---
+
+# DRAWING SCREEN
+
+Professional drawing canvas.
+
+Support:
+
+Pen
+
+Marker
+
+Brush
+
+Shapes
+
+Ruler
+
+Lasso
+
+Erase
+
+Undo
+
+Redo
+
+Stylus Pressure
+
+Palm Rejection
+
+Layers
+
+Color Picker
+
+Export Drawing
+
+Insert into Note
+
+---
+
+# CHECKLIST EXPERIENCE
+
+Each checklist should support:
+
+Nested Tasks
+
+Drag Reordering
+
+Progress Ring
+
+Collapse Completed
+
+Auto Sort
+
+Due Dates
+
+Priority
+
+Subtasks
+
+Repeat
+
+Reminders
+
+---
+
+# SEARCH EXPERIENCE
+
+Provide global intelligent search.
+
+Search:
+
+Titles
+
+Content
+
+Tags
+
+Folders
+
+Images
+
+Attachments
+
+Voice Notes
+
+Dates
+
+Reminder
+
+Color
+
+Pinned
+
+Favorite
+
+Archive
+
+Support filters.
+
+Support search history.
+
+Highlight results.
+
+---
+
+# ORGANIZATION
+
+Provide:
+
+Folders
+
+Nested Folders
+
+Tags
+
+Smart Collections
+
+Pinned
+
+Favorites
+
+Archive
+
+Trash
+
+Recently Edited
+
+Recently Opened
+
+Templates
+
+Color Labels
+
+Priority Labels
+
+---
+
+# TEMPLATES
+
+Templates should be first-class citizens.
+
+Built-in:
+
+Meeting
+
+Lecture
+
+Daily Journal
+
+Diary
+
+Shopping
+
+Travel
+
+Workout
+
+Recipe
+
+Brainstorm
+
+Project
+
+Sprint Planning
+
+Kanban
+
+Reading Notes
+
+Research Notes
+
+Custom Templates
+
+Each template should automatically customize the editor layout.
+
+Example:
+
+Meeting template automatically shows:
+
+Attendees
+
+Agenda
+
+Discussion
+
+Action Items
+
+Notes
+
+Decision
+
+Next Meeting
+
+Shopping template automatically shows:
+
+Checklist
+
+Category
+
+Estimated Cost
+
+Purchased
+
+---
+
+# SECURITY
+
+Every note:
+
+Serialize
+
+Encrypt AES-256 GCM
+
+Store encrypted
+
+Never plaintext
+
+Use Android Keystore
+
+Decrypt only in memory.
+
+App Lock:
+
+PIN
+
+Password
+
+Fingerprint
+
+Face Unlock
+
+Auto Lock
+
+Hide Recent Apps Preview
+
+---
+
+# CLOUD SYNC
+
+Optional.
+
+Never enabled by default.
+
+When enabled:
+
+Google Drive stores ONLY encrypted blobs.
+
+Never upload plaintext.
+
+Never upload keys.
+
+Support:
+
+Notes
+
+Folders
+
+Tags
+
+Attachments
+
+Templates
+
+Settings
+
+Conflict Resolution
+
+Background Sync
+
+Manual Sync
+
+Sync Status
+
+---
+
+# BACKUP
+
+Encrypted Local Backup
+
+Encrypted Google Drive Backup
+
+Scheduled Backup
+
+Automatic Backup
+
+Restore Wizard
+
+Backup Verification
+
+---
+
+# IMPORT / EXPORT
+
+Import:
+
+TXT
+
+Markdown
+
+JSON
+
+ZIP
+
+Evernote
+
+Joplin
+
+Obsidian
+
+Google Keep Export
+
+Export:
+
+PDF
+
+Markdown
+
+TXT
+
+JSON
+
+Encrypted Vault
+
+ZIP
+
+HTML
+
+---
+
+# NOTIFICATIONS
+
+Daily Reminder
+
+Checklist Reminder
+
+Location Reminder
+
+Deadline Reminder
+
+Recurring Reminder
+
+Quick Add from Notification
+
+---
+
+# SETTINGS
+
+Theme
+
+Accent Color
+
+Font
+
+Editor
+
+Backup
+
+Cloud
+
+Security
+
+Accessibility
+
+Language
+
+Storage
+
+About
+
+Privacy
+
+Licenses
+
+---
+
+# WIDGETS
+
+Quick Note
+
+Checklist
+
+Pinned Note
+
+Recent Note
+
+Voice Note
+
+Drawing Shortcut
+
+---
+
+# PERFORMANCE
+
+Application should open in under one second.
+
+Lazy loading.
+
+Efficient Room queries.
+
+Smooth scrolling with 10,000+ notes.
+
+No UI lag.
+
+Memory efficient.
+
+---
+
+# ACCESSIBILITY
+
+TalkBack
+
+Dynamic Font Scaling
+
+High Contrast
+
+Landscape
+
+Tablet
+
+Foldables
+
+Keyboard Shortcuts
+
+Stylus Support
+
+---
+
+# ARCHITECTURE
+
+Clean Architecture
+
+MVVM
+
+Repository Pattern
+
+Dependency Injection (Hilt)
+
+Room
+
+Compose Navigation
+
+Coroutines
+
+Flow
+
+WorkManager
+
+Modular project structure.
+
+---
+
+# MICRO INTERACTIONS
+
+Every interaction should feel premium.
+
+Buttons slightly elevate when pressed.
+
+Cards softly lift.
+
+Toolbar smoothly hides while scrolling.
+
+FAB morphs into menu.
+
+Dialogs animate naturally.
+
+Checkboxes animate.
+
+Page transitions should be subtle.
+
+Never use flashy animations.
+
+---
+
+# UX RULES (MANDATORY)
+
+- Every screen must have a clear visual hierarchy.
+- Primary actions should always be immediately visible.
+- Secondary actions belong in contextual menus.
+- Avoid hamburger menus where bottom navigation or contextual actions are better.
+- Maintain consistent spacing using an 8dp grid.
+- Minimum touch target: 48dp.
+- Respect Android gesture navigation.
+- Never overload a single screen with too many controls.
+- Every icon must have a text label where appropriate.
+- Frequently used actions should require at most one tap.
+- Support portrait and landscape layouts.
+- Ensure smooth transitions between screens without jarring context changes.
+
+---
+
+# DELIVERABLES
+
+Generate a complete production-ready Android project including:
+
+1. Clean project structure.
+2. Complete Jetpack Compose UI.
+3. Production-ready navigation.
+4. Fully implemented encrypted Room database.
+5. Encryption manager using Android Keystore.
+6. Repository layer.
+7. ViewModels.
+8. Data models.
+9. UI state management.
+10. Optional encrypted Google Drive synchronization.
+11. Backup and restore implementation.
+12. Material 3 theming with Light, Dark, and Dynamic themes.
+13. Responsive layouts for phones, tablets, and foldables.
+14. Well-documented, maintainable Kotlin code.
+15. Modern, premium-quality UX that looks intentionally designed rather than AI-generated.
+
+The final result should feel like a flagship Android application that could be published on Google Play as a premium productivity app, with exceptional aesthetics, intuitive interactions, flawless information architecture, and a privacy-first foundation.

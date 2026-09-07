@@ -113,6 +113,8 @@ fun SettingsScreen(
     val insets = WindowInsets.systemBars.asPaddingValues()
     val contentSidePadding = responsiveHorizontalPadding(compact = 20.dp)
     var showAppInfo by remember { mutableStateOf(false) }
+    var showPrivacyPolicy by remember { mutableStateOf(false) }
+    var showDataControls by remember { mutableStateOf(false) }
 
     // Google Drive connect flow: the Authorization API returns an access token directly, or a
     // consent screen to launch first (for a first-time grant) - handled by this launcher.
@@ -235,7 +237,7 @@ fun SettingsScreen(
             SettingsSection(title = "Security & Privacy", icon = Icons.Rounded.Shield) {
                 InfoBanner(
                     icon = Icons.Rounded.Lock,
-                    text = "Every note is encrypted with AES-256 using a key stored in the Android Keystore. Plaintext never touches storage.",
+                    text = "Note content is encrypted with AES-256-GCM using Android Keystore keys. Exports and public shares are readable copies.",
                 )
                 Spacer(Modifier.height(14.dp))
                 ToggleRow(
@@ -243,15 +245,31 @@ fun SettingsScreen(
                     title = "App lock",
                     subtitle = "Require fingerprint or screen lock to open",
                     checked = settings.appLockEnabled,
-                    onCheckedChange = viewModel::setAppLockEnabled,
+                    onCheckedChange = { viewModel.setAppLockEnabled(it, driveContext) },
                 )
                 SettingsDivider()
                 ToggleRow(
                     icon = Icons.Rounded.VisibilityOff,
                     title = "Hide in recent apps",
-                    subtitle = "Blur the preview in the app switcher",
+                    subtitle = "Block screenshots and app-switcher previews",
                     checked = settings.hideFromRecents,
                     onCheckedChange = viewModel::setHideFromRecents,
+                )
+                SettingsDivider()
+                SettingsLinkRow(
+                    icon = Icons.Rounded.Shield,
+                    title = "Privacy policy",
+                    subtitle = "Storage, Google services and sharing",
+                    trailingIcon = Icons.Rounded.ChevronRight,
+                    onClick = { showPrivacyPolicy = true },
+                )
+                SettingsDivider()
+                SettingsLinkRow(
+                    icon = Icons.Rounded.Tune,
+                    title = "Data controls",
+                    subtitle = "Local data, Drive copies and access",
+                    trailingIcon = Icons.Rounded.ChevronRight,
+                    onClick = { showDataControls = true },
                 )
             }
 
@@ -531,6 +549,8 @@ fun SettingsScreen(
     if (showAppInfo) {
         AppInfoDialog(onDismiss = { showAppInfo = false })
     }
+    if (showPrivacyPolicy) PrivacyPolicyDialog(onDismiss = { showPrivacyPolicy = false })
+    if (showDataControls) DataControlsDialog(onDismiss = { showDataControls = false })
 
     when (syncState.passphrasePrompt) {
         PassphraseMode.CREATE -> CreatePassphraseDialog(
@@ -955,33 +975,32 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
                     AppInfoSection(icon = Icons.Rounded.AutoAwesome, title = "Our mission") {
                         AppInfoParagraph(
                             "MyNotes+ is built on one idea: your notes belong to you and no one else. " +
-                                "It's a calm, private home for everything on your mind - with no accounts, no ads, " +
-                                "and no data mining. Just a fast, beautiful place to write, plan and remember.",
+                                "Write, plan and remember without a required sign-in or advertising. " +
+                                "Optional Google services have their own data practices, explained in the privacy policy.",
                         )
                     }
                     AppInfoSection(icon = Icons.Rounded.Bolt, title = "Why you'll love it") {
-                        AppInfoBullet("Truly private - every note is encrypted on your device.")
-                        AppInfoBullet("Works fully offline, so it's instant wherever you are.")
-                        AppInfoBullet("No account, no tracking, no ads. Ever.")
+                        AppInfoBullet("Note content is encrypted on your device.")
+                        AppInfoBullet("Create and read notes offline; optional models may need a download.")
+                        AppInfoBullet("No MyNotes account required and no advertising.")
                         AppInfoBullet("Organise your way with books, tags, pins and colours.")
                     }
                     AppInfoSection(icon = Icons.Rounded.Widgets, title = "What's inside") {
                         AppInfoBullet("Notes, checklists, tables and callouts.")
                         AppInfoBullet("Boards and expense trackers.")
                         AppInfoBullet("Photos, voice notes and reusable templates.")
-                        AppInfoBullet("A recoverable Trash so nothing is lost by accident.")
+                        AppInfoBullet("Recoverable Trash with adjustable retention.")
                     }
                     AppInfoSection(icon = Icons.Rounded.Shield, title = "Privacy & safety") {
                         AppInfoParagraph(
-                            "Every note is locked with AES-256-GCM using a key held in your device's " +
-                                "hardware-backed keystore. Plaintext is never written to disk and never leaves your " +
-                                "device. Optional cloud backup uploads only encrypted data - the keys always stay " +
-                                "with you, so no one, not even us, can read your notes.",
+                            "Note content uses AES-256-GCM and Android Keystore keys. Metadata and temporary " +
+                                "capture/export files are described in the privacy policy. Drive sync encrypts content; " +
+                                "public links are readable copies. AI processing is local, but Google SDKs can send diagnostics.",
                         )
                     }
                     AppInfoSection(icon = Icons.Rounded.Lock, title = "In your control") {
                         AppInfoParagraph(
-                            "Add an optional fingerprint or screen-lock to open the app, blur the preview in the " +
+                            "Add an optional fingerprint or screen-lock to open the app, protect previews in the " +
                                 "recent-apps switcher, and delete anything whenever you like. It's your space, on your terms.",
                         )
                     }

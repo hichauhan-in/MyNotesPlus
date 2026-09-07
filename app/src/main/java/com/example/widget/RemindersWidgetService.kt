@@ -32,7 +32,11 @@ private class RemindersRemoteViewsFactory(
     override fun onDataSetChanged() {
         AppContainer.init(context)
         val now = System.currentTimeMillis()
-        val all = runBlocking { AppContainer.reminderRepository?.enabledReminders() ?: emptyList() }
+        val all = runBlocking {
+            val hideContent = runCatching { AppContainer.settingsRepository?.snapshot()?.appLockEnabled != false }.getOrDefault(true)
+            val reminders = AppContainer.reminderRepository?.enabledReminders() ?: emptyList()
+            if (hideContent) reminders.map { it.copy(title = "Private reminder", body = "") } else reminders
+        }
         items = all
             .filter { it.repeat != ReminderRepeat.NONE || it.triggerAt >= now }
             .sortedBy { it.triggerAt }

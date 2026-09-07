@@ -41,7 +41,7 @@ class NoteRepository(
         // Safety net: never overwrite a note whose stored content can't be decrypted right now.
         // The original encrypted bytes may still be recoverable once the key is available again,
         // so we refuse the save rather than replacing them with freshly-encrypted placeholder text.
-        if (existing != null && existing.isLocked()) return@withContext
+        check(existing == null || !existing.isLocked()) { "This note cannot be decrypted. Its saved content has been preserved." }
         val entity = NoteEntity(
             id = note.id.ifBlank { UUID.randomUUID().toString() },
             encryptedTitle = EncryptionManager.encrypt(note.title),

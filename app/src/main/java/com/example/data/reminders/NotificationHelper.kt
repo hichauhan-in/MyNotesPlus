@@ -10,6 +10,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.example.MainActivity
 import com.example.R
+import com.example.di.AppContainer
 import com.example.domain.model.Reminder
 
 /** Creates the reminders notification channel and posts reminder notifications. */
@@ -24,16 +25,18 @@ object NotificationHelper {
                 val channel = NotificationChannel(CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH).apply {
                     description = "Note and task reminders"
                     enableVibration(true)
+                    lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
                 }
                 mgr.createNotificationChannel(channel)
             }
         }
     }
 
-    fun notify(context: Context, reminder: Reminder) {
+    suspend fun notify(context: Context, reminder: Reminder) {
         ensureChannel(context)
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) return
+        val hideContent = runCatching { AppContainer.settingsRepository?.snapshot()?.appLockEnabled != false }.getOrDefault(true)
 
         val tap = Intent(context, MainActivity::class.java).apply {
             addFlags(
@@ -52,12 +55,21 @@ object NotificationHelper {
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(reminder.title.ifBlank { "Reminder" })
+            .setContentTitle(if (hideContent) "MyNotes+ reminder" else reminder.title.ifBlank { "Reminder" })
             .setContentIntent(pending)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
-        if (reminder.body.isNotBlank()) {
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(
+                NotificationCompat.Builder(context, CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_notification)
+                    .setContentTitle("MyNotes+ reminder")
+                    .build(),
+            )
+        if (hideContent) {
+            builder.setContentText("Unlock MyNotes+ to view")
+        } else if (reminder.body.isNotBlank()) {
             builder.setContentText(reminder.body)
             builder.setStyle(NotificationCompat.BigTextStyle().bigText(reminder.body))
         }

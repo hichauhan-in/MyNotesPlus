@@ -147,7 +147,7 @@ class HomeViewModel : ViewModel() {
     val notesForExport: StateFlow<List<Note>> get() = allNotesSnapshot
 
     /** Persist a note decrypted from an imported .mynote share file. */
-    fun saveImportedNote(note: Note) = viewModelScope.launch {
+    suspend fun saveImportedNote(note: Note) {
         repository.saveNote(note)
     }
 

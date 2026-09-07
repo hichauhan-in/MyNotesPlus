@@ -83,7 +83,7 @@ import androidx.compose.material.icons.rounded.Draw
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.CloudDone
+import androidx.compose.material.icons.rounded.CloudQueue
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Coffee
 import androidx.compose.material.icons.rounded.Link
@@ -356,6 +356,8 @@ fun HomeScreen(
     }
 
     // Upload a readable copy of a note to Drive and share an "anyone with the link" URL.
+    var publicShareFor by remember { mutableStateOf<Note?>(null) }
+
     fun shareNoteDriveLink(note: Note) {
         android.widget.Toast.makeText(context, "Creating share link…", android.widget.Toast.LENGTH_SHORT).show()
         Identity.getAuthorizationClient(context)
@@ -364,7 +366,7 @@ fun HomeScreen(
                 val token = result.accessToken
                 if (!result.hasResolution() && token != null) {
                     scope.launch {
-                        val link = DriveShare.createLink(token, note)
+                        val link = DriveShare.createLink(token, note, publicShareConfirmed = true)
                         if (link != null) ShareIO.shareText(context, note.title.ifBlank { "Note" }, link)
                         else android.widget.Toast.makeText(context, "Couldn't create link", android.widget.Toast.LENGTH_SHORT).show()
                     }
@@ -402,18 +404,28 @@ fun HomeScreen(
         runCatching { importLauncher.launch(arrayOf("*/*")) }
     }
     fun runImport(passphrase: CharArray) {
-        val uri = importUri ?: return
+        val uri = importUri
+        if (uri == null) {
+            passphrase.fill('\u0000')
+            return
+        }
         importBusy = true
         scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-                if (bytes == null) NoteSharing.ImportResult.Invalid
-                else NoteSharing.importEncrypted(context, bytes, passphrase)
+            val result = withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                val imported = NoteSharing.importFromUri(context, uri, passphrase)
+                if (imported is NoteSharing.ImportResult.Success) {
+                    try {
+                        viewModel.saveImportedNote(imported.note)
+                    } catch (_: Exception) {
+                        imported.note.attachments.forEach { AttachmentStore.delete(context, it) }
+                        return@withContext NoteSharing.ImportResult.Invalid
+                    }
+                }
+                imported
             }
             importBusy = false
             when (result) {
                 is NoteSharing.ImportResult.Success -> {
-                    viewModel.saveImportedNote(result.note)
                     importUri = null
                     importWrong = false
                     android.widget.Toast.makeText(context, "Note imported", android.widget.Toast.LENGTH_SHORT).show()
@@ -422,11 +434,18 @@ fun HomeScreen(
                 NoteSharing.ImportResult.Invalid -> {
                     importUri = null
                     importWrong = false
-                    android.widget.Toast.makeText(context, "That file isn't a MyNotes share", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(context, "This share is invalid, incomplete, or exceeds the 16 MB limit", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
+    publicShareFor?.let { note ->
+        com.example.ui.share.PublicLinkConfirmation(
+            onConfirm = { publicShareFor = null; shareNoteDriveLink(note) },
+            onDismiss = { publicShareFor = null },
+        )
+    }
+
     // Shared across the empty and populated layouts so the filter row keeps its horizontal scroll
     // position when a tab switches between empty and full (e.g. selecting Trash after deleting).
     val filterScrollState = rememberScrollState()
@@ -812,7 +831,7 @@ fun HomeScreen(
         )
     }
 
-    if (showCoffeeSheet) {
+    if (showCoffeeSheet && com.example.BuildConfig.EXTERNAL_SUPPORT_ENABLED) {
         BuyCoffeeSheet(onDismiss = { showCoffeeSheet = false })
     }
 
@@ -980,7 +999,7 @@ fun HomeScreen(
             onSharePdf = { noteShareFor = null; shareNoteFile(note, ExportFormat.PDF) },
             onShareMarkdown = { noteShareFor = null; shareNoteFile(note, ExportFormat.MD) },
             onShareEncrypted = { noteShareFor = null; noteEncryptFor = note },
-            onShareDriveLink = if (driveConnected) ({ noteShareFor = null; shareNoteDriveLink(note) }) else null,
+            onShareDriveLink = if (driveConnected && !note.isExpense) ({ noteShareFor = null; publicShareFor = note }) else null,
             onDismiss = { noteShareFor = null },
         )
     }
@@ -1159,12 +1178,14 @@ private fun HomeHeader(
                 )
             }
         }
-        NeuIconButton(
-            icon = Icons.Rounded.Coffee,
-            contentDescription = "Buy me a coffee",
-            onClick = onCoffee,
-        )
-        Spacer(Modifier.width(10.dp))
+        if (com.example.BuildConfig.EXTERNAL_SUPPORT_ENABLED) {
+            NeuIconButton(
+                icon = Icons.Rounded.Coffee,
+                contentDescription = "Buy me a coffee",
+                onClick = onCoffee,
+            )
+            Spacer(Modifier.width(10.dp))
+        }
         NeuIconButton(
             icon = Icons.Rounded.Settings,
             contentDescription = "Settings",
@@ -1183,20 +1204,28 @@ private fun SyncPlusBadge(onSyncClick: (() -> Unit)?) {
     val syncing by SyncStatus.syncing.collectAsStateWithLifecycle()
     val purple = MaterialTheme.colorScheme.primary
     val accent = MaterialTheme.colorScheme.tertiary
-    val transition = rememberInfiniteTransition(label = "syncPlus")
-    val angle by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)),
-        label = "angle",
-    )
-    val colorT by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(750, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
-        label = "tint",
-    )
-    val tint = if (syncing) lerp(purple, accent, colorT) else purple
+    val angle: Float
+    val tint: Color
+    if (syncing) {
+        val transition = rememberInfiniteTransition(label = "syncPlus")
+        val rotation by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)),
+            label = "angle",
+        )
+        val colorAmount by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(750, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+            label = "tint",
+        )
+        angle = rotation
+        tint = lerp(purple, accent, colorAmount)
+    } else {
+        angle = 0f
+        tint = purple
+    }
     Box(
         modifier = Modifier
             .padding(start = 2.dp)
@@ -1223,8 +1252,8 @@ private fun SyncPlusBadge(onSyncClick: (() -> Unit)?) {
 @Composable
 private fun SyncDot(connected: Boolean) {
     Icon(
-        imageVector = if (connected) Icons.Rounded.CloudDone else Icons.Rounded.CloudOff,
-        contentDescription = if (connected) "Synced to Drive" else "On this device only",
+        imageVector = if (connected) Icons.Rounded.CloudQueue else Icons.Rounded.CloudOff,
+        contentDescription = if (connected) "Drive connected; sync may be pending" else "Drive sync is off",
         tint = if (connected) {
             MaterialTheme.colorScheme.tertiary.copy(alpha = 0.85f)
         } else {

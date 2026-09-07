@@ -2,6 +2,9 @@ package com.example.ui.lock
 
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
+import android.os.Build
+import android.provider.Settings
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.background
@@ -19,13 +22,13 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,14 +42,22 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.components.BrandGradientButton
 import com.example.ui.theme.LocalNeuColors
 import com.example.ui.theme.brandGradientHorizontal
 import com.example.ui.theme.neumorphicRaised
 
-private val ALLOWED_AUTHENTICATORS =
-    BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+private val ALLOWED_AUTHENTICATORS = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+    BiometricManager.Authenticators.BIOMETRIC_STRONG else BiometricManager.Authenticators.BIOMETRIC_WEAK) or
+    BiometricManager.Authenticators.DEVICE_CREDENTIAL
+
+internal class AppLockSession : ViewModel() {
+    var initialized = false
+    var unlocked by mutableStateOf(false)
+}
 
 /**
  * Gates [content] behind a biometric / device-credential prompt when [enabled].
@@ -59,21 +70,22 @@ private val ALLOWED_AUTHENTICATORS =
  * - The manual "Unlock" button works reliably even after the user cancels, because a
  *   single [BiometricPrompt] instance is reused (creating a new one per attempt races
  *   with the library's internal fragment and is the usual cause of a dead button).
- * - Fails *open* if the device has no biometric or screen lock enrolled, so the
- *   user is never locked out of their own encrypted notes.
+ * - Authentication failures keep the vault closed. Unlock state survives rotation,
+ *   but is never restored from saved instance state after process death.
  */
 @Composable
 fun AppLockGate(enabled: Boolean, content: @Composable () -> Unit) {
     val activity = LocalContext.current.findFragmentActivity()
     if (activity == null) {
-        content()
+        if (enabled) LockScreen(error = "Secure authentication is unavailable. Reopen the app.", onUnlock = {}) else content()
         return
     }
 
-    // Whether the lock was already ON when this gate first appeared. If the user turns
-    // it on later, this stays false, so the current session is never interrupted.
-    val lockedAtStart = rememberSaveable { enabled }
-    var unlocked by rememberSaveable { mutableStateOf(!lockedAtStart) }
+    val session: AppLockSession = viewModel()
+    if (!session.initialized) {
+        session.unlocked = !enabled
+        session.initialized = true
+    }
     var error by remember { mutableStateOf<String?>(null) }
     val promptShowing = remember { mutableStateOf(false) }
     val currentEnabled by rememberUpdatedState(enabled)
@@ -87,7 +99,7 @@ fun AppLockGate(enabled: Boolean, content: @Composable () -> Unit) {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     promptShowing.value = false
                     error = null
-                    unlocked = true
+                    session.unlocked = true
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
@@ -118,9 +130,9 @@ fun AppLockGate(enabled: Boolean, content: @Composable () -> Unit) {
     }
 
     fun authenticate() {
-        if (unlocked || promptShowing.value) return
+        if (session.unlocked || promptShowing.value) return
         if (!canAuthenticate(activity)) {
-            unlocked = true
+            error = "Authentication is unavailable. Check your device screen lock, then try again."
             return
         }
         error = null
@@ -138,10 +150,10 @@ fun AppLockGate(enabled: Boolean, content: @Composable () -> Unit) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP ->
-                    if (currentEnabled && !activity.isChangingConfigurations) unlocked = false
+                    if (currentEnabled && !activity.isChangingConfigurations) session.unlocked = false
 
                 Lifecycle.Event.ON_RESUME ->
-                    if (currentEnabled && !unlocked) authenticate()
+                    if (currentEnabled && !session.unlocked) authenticate()
 
                 else -> Unit
             }
@@ -150,7 +162,7 @@ fun AppLockGate(enabled: Boolean, content: @Composable () -> Unit) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    if (!enabled || unlocked) {
+    if (!enabled || session.unlocked) {
         content()
     } else {
         LockScreen(error = error, onUnlock = { authenticate() })
@@ -160,6 +172,7 @@ fun AppLockGate(enabled: Boolean, content: @Composable () -> Unit) {
 @Composable
 private fun LockScreen(error: String?, onUnlock: () -> Unit) {
     val neu = LocalNeuColors.current
+    val context = LocalContext.current
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -206,6 +219,11 @@ private fun LockScreen(error: String?, onUnlock: () -> Unit) {
                 icon = Icons.Rounded.Fingerprint,
                 onClick = onUnlock,
             )
+            if (error != null) {
+                TextButton(onClick = {
+                    runCatching { context.startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS)) }
+                }) { Text("Device security settings") }
+            }
         }
     }
 }

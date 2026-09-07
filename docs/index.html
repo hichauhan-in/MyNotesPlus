@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Privacy Policy for MyNotes+ — an offline-first, privacy-first, encrypted note-taking app for Android." />
+  <meta name="robots" content="index, follow" />
+  <title>MyNotes+ — Privacy Policy</title>
+  <style>
+    :root {
+      --indigo: #6d5ef6;
+      --violet: #9b5de5;
+      --ink: #1a1b22;
+      --muted: #5b5f70;
+      --bg: #f3f4fb;
+      --card: #ffffff;
+      --border: #e6e7f2;
+      --teal: #14b8a6;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--indigo); }
+
+    .hero {
+      background: linear-gradient(135deg, #6d5ef6 0%, #7c5cf0 55%, #9b5de5 100%);
+      color: #fff;
+      padding: 64px 24px 72px;
+      text-align: center;
+    }
+
+    .badge {
+      width: 72px; height: 72px;
+      margin: 0 auto 20px;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.16);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 34px;
+      backdrop-filter: blur(6px);
+    }
+
+    .hero h1 { margin: 0; font-size: 2.1rem; letter-spacing: -0.5px; }
+    .hero p { margin: 10px 0 0; opacity: 0.92; font-size: 1.05rem; }
+    .hero .updated { display: inline-block; margin-top: 18px; font-size: 0.85rem; background: rgba(255,255,255,0.18); padding: 6px 14px; border-radius: 50px; }
+
+    .wrap { max-width: 780px; margin: -40px auto 0; padding: 0 20px 64px; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 28px 30px;
+      margin-bottom: 22px;
+      box-shadow: 0 12px 40px rgba(45, 40, 90, 0.06);
+    }
+
+    h2 { font-size: 1.25rem; margin: 4px 0 12px; display: flex; align-items: center; gap: 10px; }
+    h2 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--indigo); flex: none; }
+    h3 { font-size: 1.02rem; margin: 20px 0 6px; }
+    p, li { color: #2c2e3c; }
+    .muted { color: var(--muted); }
+
+    ul { padding-left: 20px; margin: 8px 0; }
+    li { margin: 5px 0; }
+
+    .pill {
+      display: inline-block; font-size: 0.8rem; font-weight: 600;
+      color: #0e9384; background: #d7f7f0; padding: 3px 10px; border-radius: 50px;
+    }
+
+    .highlight {
+      background: linear-gradient(135deg, rgba(109,94,246,0.08), rgba(155,93,229,0.08));
+      border: 1px solid rgba(109,94,246,0.22);
+      border-radius: 16px;
+      padding: 16px 18px;
+      margin: 16px 0 4px;
+    }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    td { padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; font-size: 0.95rem; }
+    td:first-child { font-weight: 600; width: 42%; }
+
+    footer { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 8px 20px 48px; }
+    footer a { color: var(--muted); }
+
+    .toc { display: flex; flex-wrap: wrap; gap: 8px; }
+    .toc a { font-size: 0.85rem; text-decoration: none; background: #eef0fb; color: #4a4ce8; padding: 6px 12px; border-radius: 50px; }
+    .toc a:hover { background: #e2e4fa; }
+
+    @media (max-width: 520px) {
+      .hero h1 { font-size: 1.7rem; }
+      .card { padding: 22px 20px; }
+      td:first-child { width: 100%; display: block; border: none; padding-bottom: 0; }
+      td { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="badge">🔒</div>
+    <h1>MyNotes+ Privacy Policy</h1>
+    <p>Private. Encrypted. Yours.</p>
+    <span class="updated">Last updated: 7 September 2026</span>
+  </header>
+
+  <main class="wrap">
+    <div class="card">
+      <p>
+        <strong>MyNotes+</strong>, developed by <strong>Himanshu Chauhan</strong>, is an offline-first
+        notes, reminders, drawing and personal expense-tracking app. This policy explains its local
+        storage, optional Google services, sharing, and data controls.
+      </p>
+      <div class="toc">
+        <a href="#collect">What we collect</a>
+        <a href="#storage">How notes are stored</a>
+        <a href="#permissions">Permissions</a>
+        <a href="#cloud">Google Drive sync</a>
+        <a href="#tracking">SDK data &amp; ads</a>
+        <a href="#retention">Retention & deletion</a>
+        <a href="#security">Security</a>
+        <a href="#children">Children</a>
+        <a href="#changes">Changes</a>
+        <a href="#contact">Contact</a>
+      </div>
+    </div>
+
+    <div class="card" id="collect">
+      <h2><span class="dot"></span> Information we collect</h2>
+      <p><span class="pill">No MyNotes account required</span></p>
+      <p>
+        You can create and edit notes without signing in. The app handles the content you enter,
+        including text, images, recordings, handwriting, reminders, account names, balances and
+        transaction records. The developer does not operate a server that receives your note content.
+        Optional Google services and their SDKs have the data practices described below.
+      </p>
+      <ul>
+        <li>Your content and preferences are stored in app-private storage. Optional sync and sharing can transmit content you choose.</li>
+        <li>Connecting Drive stores your Google account email and sync configuration locally. OAuth access tokens are used in memory to authorize Drive requests.</li>
+        <li>Expense balances and transfers are manual records. The app does not connect to banks, initiate bank payments, trade investments, or provide financial advice.</li>
+      </ul>
+    </div>
+
+    <div class="card" id="storage">
+      <h2><span class="dot"></span> How your notes are stored</h2>
+      <p>
+        Note titles and bodies, saved attachment files, template names and bodies, and reminder titles
+        and bodies are encrypted with <strong>AES-256-GCM</strong>. Local encryption keys are held in the
+        <strong>Android Keystore</strong>, hardware-backed where supported. Content is decrypted in memory
+        for display, search, reminders, widgets, sync, or a sharing action.
+      </p>
+      <p>
+        Organization metadata, including tags, book names, record IDs, note types, timestamps and settings,
+        is not all encrypted by the app, but remains in app-private storage. Camera captures and recordings
+        use temporary private files before encryption. Decrypted attachments may be cached in memory.
+        Readable exports and ordinary share files are intentionally created when you request them.
+      </p>
+      <p>
+        <strong>On-device assistance</strong> uses Google ML Kit for OCR, smart suggestions and handwriting
+        recognition, and Gemini Nano through AICore on supported devices for summaries. Recognition and
+        inference process your content on-device; the app does not send that content to a cloud AI API.
+        Some models download from Google. ML Kit can send diagnostic and usage data to Google, including
+        device and app information, identifiers, performance metrics, feature events, error codes,
+        configured languages and input/output sizes. This can occur even when Drive sync is off.
+        See <a href="https://developers.google.com/ml-kit/android-data-disclosure">Google's ML Kit data disclosure</a>
+        and <a href="https://policies.google.com/privacy">Google's Privacy Policy</a>.
+      </p>
+      <div class="highlight">
+        Exports are readable files in <strong>Downloads/MyNotes</strong> or your chosen folder. Ordinary
+        sharing can create readable files in the app's private share cache and grant the receiving app
+        temporary read access. Encrypted sharing instead creates a passphrase-protected file. The
+        receiving app's own privacy and retention practices apply to anything you share.
+      </div>
+      <p>
+        Because the key stays bound to your device and never leaves it, the encrypted note database and
+        its attachments are <strong>excluded from Android’s automatic cloud backup and device‑to‑device
+        transfer</strong>. This keeps your notes on the device that created them; it also means that
+        installing the app on a new device (or restoring a backup) starts with an empty library rather
+        than notes that could no longer be unlocked. <strong>Updating the app on the same device keeps all
+        your existing notes and unlocks them normally.</strong>
+      </p>
+    </div>
+
+    <div class="card" id="permissions">
+      <h2><span class="dot"></span> Permissions we use</h2>
+      <table>
+        <tr>
+          <td>Biometric (<code>USE_BIOMETRIC</code>)</td>
+          <td>Used only if you turn on <strong>App lock</strong>, to unlock the app with your fingerprint, face, or device screen lock. Biometric data is handled entirely by the Android system — the app never sees or stores it.</td>
+        </tr>
+        <tr>
+          <td>Microphone (<code>RECORD_AUDIO</code>)</td>
+          <td>Requested when you choose to record a voice note. Recordings are stored privately and encrypted after recording. They can leave the device if you explicitly export or share them, including inside an encrypted share package.</td>
+        </tr>
+        <tr>
+          <td>Network access (<code>INTERNET</code>, <code>ACCESS_NETWORK_STATE</code>)</td>
+          <td>Used for optional Google Drive authorization, encrypted sync, and confirmed public-link sharing, and by Google SDKs for model downloads and diagnostics. Turning sync off does not disable all SDK network traffic.</td>
+        </tr>
+        <tr>
+          <td>Notifications (<code>POST_NOTIFICATIONS</code>)</td>
+          <td>Used to show reminders you create. If permission is denied, reminders remain in the app but notifications cannot be delivered. Notification content is private on the lock screen, subject to system settings. With app lock enabled, notification and widget text is replaced with a generic reminder label.</td>
+        </tr>
+        <tr>
+          <td>Alarms &amp; reboot (<code>SCHEDULE_EXACT_ALARM</code>, <code>RECEIVE_BOOT_COMPLETED</code>)</td>
+          <td>Used to schedule reminders and re-arm them after restart. Exact-alarm access is optional; without it, Android may delay delivery. Reminder text is encrypted locally and included in optional encrypted Drive sync.</td>
+        </tr>
+      </table>
+      <p class="muted" style="margin-top:14px;">The app requests no location or contacts permissions, and no camera permission of its own - photos are added through the Android system photo picker or camera app.</p>
+    </div>
+
+    <div class="card" id="cloud">
+      <h2><span class="dot"></span> Optional end‑to‑end encrypted Google Drive sync</h2>
+      <p><span class="pill">Off by default</span></p>
+      <p>
+        Cloud sync is <strong>disabled by default</strong> and only ever runs if you deliberately turn it on
+        and connect a Google account. When enabled, every note (of any type), your saved
+        <strong>templates</strong> and your <strong>reminders</strong> are
+        <strong>encrypted on your device before they are uploaded</strong>, so only unreadable
+        <strong>ciphertext blobs</strong> are stored in your Google Drive.
+      </p>
+      <p>
+        The key that unlocks your notes is protected by a <strong>recovery passphrase that you choose</strong>
+        and is kept only in wrapped (encrypted) form. Because the key is never uploaded in the clear,
+        <strong>neither Google nor anyone you might accidentally share a Drive folder with can read your
+        notes</strong> — only someone with your account <em>and</em> passphrase can. Signing in on a new
+        device with the same account and passphrase restores the supported synced records.
+      </p>
+      <p>
+        <strong>Current sync limits:</strong> note content, custom templates and reminders sync. Image and
+        audio attachment binaries and book/folder structure do not yet sync. Use an encrypted share file
+        or an export with attachments when moving those files. Drive also receives account authorization
+        details and file metadata such as identifiers and modification times; these are not hidden by
+        content encryption.
+      </p>
+      <p class="muted">
+        Google Drive’s own privacy policy also applies to the encrypted blobs stored in your account. If you
+        lose your recovery passphrase, the synced notes cannot be recovered — this is the trade‑off that keeps
+        them private to you.
+      </p>
+      <p class="muted">
+        <strong>“Share a link” is separate and always a deliberate choice.</strong> When you tap
+        <em>Share → Share a link</em> on a note, that single note is uploaded to your own Google Drive as a
+        <strong>readable copy</strong> and given an <strong>“anyone with the link can view”</strong>
+        permission so you can hand the link to someone. Unlike synced notes, this copy is
+        <strong>not end‑to‑end encrypted</strong> — anyone who has the link can open it. Nothing is shared
+        until you confirm the public-link warning. Expense trackers cannot be shared as public links.
+        The public copy is a snapshot, not live collaboration. Delete it from the
+        "MyNotes Shared" folder in Drive to revoke the link; this cannot recall copies already downloaded.
+      </p>
+      <p class="muted">
+        <strong>“Share encrypted” is the private alternative.</strong> Choosing <em>Share → Share encrypted</em>
+        packs the note into a <strong>passphrase‑locked <code>.mynote</code> file</strong> that is
+        <strong>encrypted on your device</strong> before it leaves the app. MyNotes does not upload it
+        automatically; your chosen receiving app may upload or retain it. New shares require at least
+        12 passphrase characters. Send the passphrase through a separate channel. Import supports packages
+        up to 16 MB, individual attachments up to 6 MB, and 8 MB of attachment data in total. Imported
+        attachments receive new names so they cannot overwrite files belonging to another note.
+      </p>
+    </div>
+
+    <div class="card" id="tracking">
+      <h2><span class="dot"></span> SDK data, ads and sales</h2>
+      <ul>
+        <li>We do <strong>not</strong> track you across apps or websites.</li>
+        <li>We do <strong>not</strong> show ads.</li>
+        <li>The developer does not sell or rent your content. Google SDK diagnostics and user-requested sync/sharing are described above.</li>
+        <li>We do <strong>not</strong> build advertising or user profiles.</li>
+      </ul>
+    </div>
+
+    <div class="card" id="retention">
+      <h2><span class="dot"></span> Data retention & deletion</h2>
+      <p>
+        Notes, books and templates can be moved to Trash, restored, or permanently deleted. The default
+        trash-retention period is 30 days and can be changed in the app; cleanup runs when the app runs.
+        Reminders can be deleted from the Reminders screen. Local data otherwise remains until you remove it.
+      </p>
+      <ol>
+        <li><strong>Remove local app data:</strong> open Settings &gt; Security &amp; Privacy &gt; Data controls,
+          then Device storage. Use Android's Storage &gt; Clear storage, or uninstall MyNotes+. Back up anything
+          you need first. Exported files in Downloads or a chosen folder are separate and must be deleted there.</li>
+        <li><strong>Remove Drive data:</strong> disconnect Drive on every device first. In Drive, delete the
+          MyNotes backup folder and any MyNotes Shared copies, then empty Drive Trash. In Drive Settings &gt;
+          Manage apps, find MyNotes and delete its hidden app data to remove the recovery-key envelope,
+          templates and reminders. Google controls its own retention policies.</li>
+        <li><strong>Revoke access:</strong> remove MyNotes from your Google account's third-party connections.
+          Disconnecting or revoking access does not itself delete existing Drive files or local notes.</li>
+      </ol>
+      <p>There is no separately hosted MyNotes user account to close. Connecting Drive uses your existing
+        Google account; MyNotes does not delete that account. Readable share-cache files are temporary and
+        can also be removed through Android's Clear cache control. Recipients control their own copies.</p>
+    </div>
+
+    <div class="card" id="security">
+      <h2><span class="dot"></span> Security</h2>
+      <p>
+        We use industry‑standard protections including AES‑256‑GCM encryption, the Android Keystore, and an
+        optional biometric/device-credential app lock. Authentication errors do not open the vault.
+        You can also enable "Hide in recent apps" to protect previews. No storage or security mechanism
+        can guarantee absolute protection. Keep your device secure and your recovery passphrase private.
+      </p>
+    </div>
+
+    <div class="card" id="children">
+      <h2><span class="dot"></span> Children’s privacy</h2>
+      <p>
+        MyNotes+ is a general-purpose productivity app, not specifically designed for children.
+        Its Google SDK data practices are described above and are not exempted by a user's age.
+        Contact the developer with concerns about children's personal information. Store target-audience
+        declarations must accurately reflect the audiences for which the app is distributed.
+      </p>
+    </div>
+
+    <div class="card" id="changes">
+      <h2><span class="dot"></span> Changes to this policy</h2>
+      <p>
+        We may update this Privacy Policy as the app evolves. Material changes will be reflected here with an
+        updated "Last updated" date. Where a new use of data requires consent, that consent will be
+        requested separately; simply continuing to use the app is not treated as permission for it.
+      </p>
+    </div>
+
+    <div class="card" id="contact">
+      <h2><span class="dot"></span> Contact</h2>
+      <p>
+        Questions about this policy or your privacy? Contact Himanshu Chauhan using the Contact option at:
+        <br />
+        <a href="https://www.hichauhan.in/">https://www.hichauhan.in/</a>
+      </p>
+    </div>
+  </main>
+
+  <footer>
+    <p>MyNotes+ &middot; Private. Encrypted. Yours.<br />&copy; 2026 MyNotes+. All rights reserved.</p>
+  </footer>
+</body>
+</html>

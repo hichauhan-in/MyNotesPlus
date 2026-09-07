@@ -60,8 +60,8 @@ class MainActivity : FragmentActivity() {
                 .collectAsStateWithLifecycle(initialValue = initialSettings)
 
             // Optionally hide the content from the recent-apps preview / screenshots.
-            LaunchedEffect(settings.hideFromRecents) {
-                if (settings.hideFromRecents) {
+            LaunchedEffect(settings.hideFromRecents, settings.appLockEnabled) {
+                if (settings.hideFromRecents || settings.appLockEnabled) {
                     window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
                 } else {
                     window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)

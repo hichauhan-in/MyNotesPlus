@@ -395,6 +395,7 @@ object Exporter {
 
     private fun expenseLines(content: String): List<String> {
         val o = decodeJsonRaw(content) ?: return listOf("(empty budget)")
+        if (o.optInt("version", 1) >= 4) return ExpenseReport.lines(content)
         if (o.optInt("version", 1) >= 2 && o.has("accounts")) return expenseV2Lines(o)
         val out = mutableListOf<String>()
         out.add("Income: ₹${money(o.optDouble("income", 0.0))}")
@@ -417,6 +418,7 @@ object Exporter {
 
     private fun expenseMd(content: String): String {
         val o = decodeJsonRaw(content) ?: return "_(empty budget)_"
+        if (o.optInt("version", 1) >= 4) return ExpenseReport.markdown(content)
         if (o.optInt("version", 1) >= 2 && o.has("accounts")) return expenseV2Md(o)
         return buildString {
             appendLine("**Income:** ₹${money(o.optDouble("income", 0.0))}")
@@ -439,6 +441,7 @@ object Exporter {
 
     private fun expenseHtml(content: String): String {
         val o = decodeJsonRaw(content) ?: return "<p><em>(empty budget)</em></p>"
+        if (o.optInt("version", 1) >= 4) return ExpenseReport.html(content)
         if (o.optInt("version", 1) >= 2 && o.has("accounts")) return expenseV2Html(o)
         return buildString {
             append("<p><strong>Income:</strong> ₹${money(o.optDouble("income", 0.0))}</p>")

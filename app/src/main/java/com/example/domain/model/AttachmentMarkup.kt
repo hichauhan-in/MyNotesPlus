@@ -37,6 +37,12 @@ object AttachmentMarkup {
     fun fileNames(content: String): List<String> =
         TOKEN.findAll(content).map { it.groupValues[2] }.toList()
 
+    fun renameFiles(content: String, replacements: Map<String, String>): String = TOKEN.replace(content) { match ->
+        val name = replacements[match.groupValues[2]] ?: return@replace match.value
+        val width = match.groupValues[3].takeIf { it.isNotEmpty() }?.let { "?w=$it" }.orEmpty()
+        "![${match.groupValues[1]}](attachment://$name$width)"
+    }
+
     /** If [line] is exactly an attachment token, returns its parsed reference; otherwise null. */
     fun parseLine(line: String): AttachmentRef? {
         val match = TOKEN.matchEntire(line.trim()) ?: return null

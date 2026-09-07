@@ -1,18 +1,71 @@
-*.iml
-.gradle
-.kotlin
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
+# ---------------------------------------------------------------------------
+# MyNotes+ — Android .gitignore
+# ---------------------------------------------------------------------------
+
+# Built application files
+*.apk
+*.aab
+*.aar
+*.ap_
+*.apks
+
+# Dalvik / ART bytecode & Java classes
+*.dex
+*.class
+
+# Generated / build output
 /build
+build/
 /captures
+gen/
+out/
+release/
+app/release/
+
+# Gradle
+.gradle/
+.gradle
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+
+# Kotlin
+.kotlin
+
+# Local configuration (SDK path, machine-specific)
+local.properties
+
+# ---------------------------------------------------------------------------
+# Secrets & signing — NEVER COMMIT THESE
+# ---------------------------------------------------------------------------
+# Signing keystores (upload / release / debug)
+*.jks
+*.keystore
+my-upload-key.jks
+keystore.properties
+
+# Environment / API keys (keep the .env.example template only)
+.env
+.env.*
+!.env.example
+
+# Firebase / Google services config
+google-services.json
+
+# ---------------------------------------------------------------------------
+# IDE — Android Studio / IntelliJ
+# ---------------------------------------------------------------------------
+*.iml
+.idea/
+!.idea/codeStyles/
+!.idea/inspectionProfiles/
 .externalNativeBuild
 .cxx
-local.properties
-.env
-debug.keystore
+
+# ---------------------------------------------------------------------------
+# OS / misc
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.log
+*.hprof
+

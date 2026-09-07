@@ -1,6 +1,7 @@
 package com.example.data.share
 
 import android.content.Context
+import android.net.Uri
 import android.util.Base64
 import com.example.data.attachments.AttachmentStore
 import com.example.data.sync.SyncCrypto
@@ -8,6 +9,7 @@ import com.example.domain.model.AttachmentMarkup
 import com.example.domain.model.Note
 import com.example.domain.model.NoteType
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -24,7 +26,7 @@ object NoteSharing {
 
     const val FILE_EXTENSION = "mynote"
     const val MIME = "application/octet-stream"
-    const val MIN_PASSPHRASE = 4
+    const val MIN_PASSPHRASE = 12
     private const val MAGIC = "mynotes.share"
     private const val VERSION = 1
 
@@ -32,17 +34,23 @@ object NoteSharing {
     suspend fun exportEncrypted(context: Context, note: Note, passphrase: CharArray): ByteArray? =
         withContext(Dispatchers.IO) {
             try {
+                require(passphrase.size >= MIN_PASSPHRASE)
+                require(note.content.length <= ShareImportPolicy.MAX_CONTENT_CHARS)
                 val attachments = JSONArray()
                 val names = (note.attachments + AttachmentMarkup.fileNames(note.content)).distinct()
+                require(names.size <= ShareImportPolicy.MAX_ATTACHMENTS)
+                var totalBytes = 0L
                 names.forEach { name ->
-                    val bytes = AttachmentStore.readDecrypted(context, name)
-                    if (bytes != null) {
+                    require(AttachmentStore.fileFor(context, name).length() <= ShareImportPolicy.MAX_ATTACHMENT_BYTES + 64L)
+                    val bytes = requireNotNull(AttachmentStore.readDecrypted(context, name))
+                    require(bytes.size <= ShareImportPolicy.MAX_ATTACHMENT_BYTES)
+                    totalBytes += bytes.size
+                    require(totalBytes <= ShareImportPolicy.MAX_ATTACHMENTS_BYTES)
                         attachments.put(
                             JSONObject()
                                 .put("name", name)
                                 .put("data", Base64.encodeToString(bytes, Base64.NO_WRAP)),
                         )
-                    }
                 }
                 val payload = JSONObject()
                     .put("title", note.title)
@@ -55,7 +63,7 @@ object NoteSharing {
 
                 val salt = SyncCrypto.newSalt()
                 val key = SyncCrypto.deriveKeyFromPassphrase(passphrase, salt)
-                val encrypted = SyncCrypto.encrypt(payload.toByteArray(Charsets.UTF_8), key)
+                val encrypted = try { SyncCrypto.encrypt(payload.toByteArray(Charsets.UTF_8), key) } finally { key.fill(0) }
                 JSONObject()
                     .put("app", MAGIC)
                     .put("v", VERSION)
@@ -63,6 +71,9 @@ object NoteSharing {
                     .put("data", SyncCrypto.encodeBase64(encrypted))
                     .toString()
                     .toByteArray(Charsets.UTF_8)
+                    .also { require(it.size <= ShareImportPolicy.MAX_FILE_BYTES) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 null
             } finally {
@@ -77,36 +88,62 @@ object NoteSharing {
         object Invalid : ImportResult
     }
 
+    suspend fun importFromUri(context: Context, uri: Uri, passphrase: CharArray): ImportResult = withContext(Dispatchers.IO) {
+        try {
+            val bytes = context.contentResolver.openInputStream(uri)?.use { ShareImportPolicy.readBounded(it) }
+                ?: return@withContext ImportResult.Invalid
+            importEncrypted(context, bytes, passphrase)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            ImportResult.Invalid
+        } finally {
+            passphrase.fill('\u0000')
+        }
+    }
+
     /**
      * Decrypts share-file [bytes] with [passphrase], writing any attachments into this device's
      * store and returning a brand-new [Note] (fresh id, no book/pin/favourite state) to be saved.
      */
     suspend fun importEncrypted(context: Context, bytes: ByteArray, passphrase: CharArray): ImportResult =
         withContext(Dispatchers.IO) {
+            val written = mutableListOf<String>()
+            var imported = false
             try {
+                require(bytes.size <= ShareImportPolicy.MAX_FILE_BYTES)
                 val env = JSONObject(String(bytes, Charsets.UTF_8))
-                if (env.optString("app") != MAGIC) return@withContext ImportResult.Invalid
+                if (env.optString("app") != MAGIC || env.optInt("v") != VERSION) return@withContext ImportResult.Invalid
                 val salt = SyncCrypto.decodeBase64(env.getString("salt"))
+                require(salt.size == 16)
                 val data = SyncCrypto.decodeBase64(env.getString("data"))
                 val key = SyncCrypto.deriveKeyFromPassphrase(passphrase, salt)
-                val decrypted = SyncCrypto.decrypt(data, key)
+                val decrypted = try { SyncCrypto.decrypt(data, key) } finally { key.fill(0) }
                     ?: return@withContext ImportResult.WrongPassphrase
                 val payload = JSONObject(String(decrypted, Charsets.UTF_8))
 
                 val attArr = payload.optJSONArray("attachments") ?: JSONArray()
+                require(attArr.length() <= ShareImportPolicy.MAX_ATTACHMENTS)
+                val replacements = linkedMapOf<String, String>()
+                val decodedAttachments = linkedMapOf<String, ByteArray>()
+                var totalBytes = 0L
                 for (i in 0 until attArr.length()) {
                     val a = attArr.getJSONObject(i)
-                    val name = a.optString("name")
-                    if (name.isNotBlank()) {
-                        val b = runCatching { Base64.decode(a.optString("data"), Base64.NO_WRAP) }.getOrNull()
-                        if (b != null) AttachmentStore.writeEncrypted(context, name, b)
-                    }
+                    val original = a.getString("name")
+                    require(original !in replacements) { "Duplicate attachment name" }
+                    val name = ShareImportPolicy.freshName(original)
+                    val attachment = Base64.decode(a.getString("data"), Base64.NO_WRAP)
+                    require(attachment.size <= ShareImportPolicy.MAX_ATTACHMENT_BYTES)
+                    totalBytes += attachment.size
+                    require(totalBytes <= ShareImportPolicy.MAX_ATTACHMENTS_BYTES)
+                    replacements[original] = name
+                    decodedAttachments[name] = attachment
                 }
                 val tags = payload.optJSONArray("tags")?.let { arr ->
                     (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() }
                 } ?: emptyList()
-                val type = runCatching { NoteType.valueOf(payload.optString("type")) }.getOrDefault(NoteType.TEXT)
-                val content = payload.optString("content")
+                val type = NoteType.valueOf(payload.getString("type"))
+                val content = ShareImportPolicy.renameContent(payload.getString("content"), type == NoteType.SCRIBBLE, replacements)
                 val now = System.currentTimeMillis()
                 val note = Note(
                     id = UUID.randomUUID().toString(),
@@ -117,12 +154,20 @@ object NoteSharing {
                     tags = tags,
                     colorArgb = payload.optInt("color", 0),
                     type = type,
-                    attachments = AttachmentMarkup.fileNames(content),
+                    attachments = replacements.values.toList(),
                 )
+                decodedAttachments.forEach { (name, attachment) ->
+                    written.add(name)
+                    check(AttachmentStore.writeEncrypted(context, name, attachment)) { "Could not store an attachment" }
+                }
+                imported = true
                 ImportResult.Success(note)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 ImportResult.Invalid
             } finally {
+                if (!imported) written.forEach { AttachmentStore.delete(context, it) }
                 passphrase.fill('\u0000')
             }
         }

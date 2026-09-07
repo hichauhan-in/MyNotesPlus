@@ -168,6 +168,8 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -305,6 +307,9 @@ fun EditorScreen(
     // place the trailing writing line beneath the lowest ink stroke so typing never lands on it.
     val inkDensity = LocalDensity.current
     var inkUpperHeightPx by remember { mutableStateOf(0) }
+    val inkProtectedBounds = remember(state.id) {
+        androidx.compose.runtime.mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>()
+    }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -741,6 +746,8 @@ fun EditorScreen(
     }
 
     // Upload a readable copy to Drive and share an "anyone with the link can view" URL.
+    var showPublicLinkConfirmation by remember { mutableStateOf(false) }
+
     fun shareDriveLink() {
         android.widget.Toast.makeText(context, "Creating share link…", android.widget.Toast.LENGTH_SHORT).show()
         Identity.getAuthorizationClient(context)
@@ -750,7 +757,7 @@ fun EditorScreen(
                 if (!result.hasResolution() && token != null) {
                     val note = buildExportNote()
                     scope.launch {
-                        val link = DriveShare.createLink(token, note)
+                        val link = DriveShare.createLink(token, note, publicShareConfirmed = true)
                         if (link != null) {
                             ShareIO.shareText(context, note.title.ifBlank { "Note" }, link)
                         } else {
@@ -889,8 +896,7 @@ fun EditorScreen(
     val focusManager = LocalFocusManager.current
     fun leave() {
         focusManager.clearFocus(force = true)
-        viewModel.flush()
-        onNavigateBack()
+        viewModel.saveBeforeLeaving(onNavigateBack)
     }
 
     BackHandler { leave() }
@@ -902,6 +908,7 @@ fun EditorScreen(
     ) {
         EditorTopBar(
             saveStatus = state.saveStatus,
+            onRetrySave = viewModel::flush,
             templateMode = state.templateMode,
             editing = editing,
             onBack = { leave() },
@@ -942,7 +949,9 @@ fun EditorScreen(
         // The scrolling note "header" (title + meta + progress) - shared by the virtualized path and
         // the ink-overlay path so it looks identical either way.
         val editorHeaderContent: @Composable () -> Unit = {
-            Column(Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxWidth().onGloballyPositioned {
+                inkProtectedBounds["header"] = it.boundsInRoot()
+            }) {
                 Spacer(Modifier.height(8.dp))
                 BasicTextField(
                     value = titleField,
@@ -1003,6 +1012,13 @@ fun EditorScreen(
 
         // Renders one text-note block. Shared by the virtualized (LazyColumn) and ink (Column) paths.
         val renderTextBlock: @Composable (Int, EditorBlock) -> Unit = { index, block ->
+            Column(
+                modifier = Modifier.fillMaxWidth().then(
+                    if (block is TextBlock) Modifier else Modifier.onGloballyPositioned {
+                        inkProtectedBounds[block.id] = it.boundsInRoot()
+                    },
+                ),
+            ) {
             when (block) {
                 is TextBlock -> EditorTextBlock(
                     value = block.value,
@@ -1073,6 +1089,7 @@ fun EditorScreen(
                     Spacer(Modifier.height(12.dp))
                 }
             }
+            }
         }
 
         // In "write below the drawing" mode, make sure the note ends in a text line to write on once
@@ -1094,6 +1111,7 @@ fun EditorScreen(
                     content = state.content,
                     onTitleChange = viewModel::onTitleChanged,
                     onContentChange = viewModel::onContentChanged,
+                    onCommitContent = viewModel::commitContentNow,
                     meta = metaBar,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -1201,6 +1219,20 @@ fun EditorScreen(
                     // "Write below the drawing" reserves space so the trailing text line sits beneath
                     // the lowest ink stroke; "Free overlay" keeps the classic behaviour.
                     val writeBelow = pageInkTextMode == PageInkTextMode.BELOW && inkStrokes.isNotEmpty()
+                    PageInkLayer(
+                        strokes = inkStrokes,
+                        drawEnabled = pageDrawMode && editing,
+                        penColor = penColor,
+                        penWidthDp = penWidthDp,
+                        scrollState = inkScroll,
+                        protectedBounds = listOfNotNull(inkProtectedBounds["header"]) +
+                            blocks.filterNot { it is TextBlock }.mapNotNull { inkProtectedBounds[it.id] },
+                        horizontalInsetPx = with(inkDensity) { contentSidePadding.toPx() },
+                        onCommitStroke = {
+                            inkStrokes.add(it)
+                            pushBlocks(immediate = true)
+                        },
+                    ) {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -1230,17 +1262,7 @@ fun EditorScreen(
                             Spacer(Modifier.height(24.dp))
                         }
                     }
-                    PageInkLayer(
-                        strokes = inkStrokes,
-                        drawEnabled = pageDrawMode && editing,
-                        penColor = penColor,
-                        penWidthDp = penWidthDp,
-                        scrollState = inkScroll,
-                        onCommitStroke = {
-                            inkStrokes.add(it)
-                            pushBlocks(immediate = true)
-                        },
-                    )
+                    }
                 }
             }
         }
@@ -1335,13 +1357,20 @@ fun EditorScreen(
         )
     }
 
+    if (showPublicLinkConfirmation) {
+        com.example.ui.share.PublicLinkConfirmation(
+            onConfirm = { showPublicLinkConfirmation = false; shareDriveLink() },
+            onDismiss = { showPublicLinkConfirmation = false },
+        )
+    }
+
     if (showShareSheet) {
         ShareOptionsSheet(
             onShareText = { showShareSheet = false; shareNoteText() },
             onSharePdf = { showShareSheet = false; shareNoteFile(ExportFormat.PDF) },
             onShareMarkdown = { showShareSheet = false; shareNoteFile(ExportFormat.MD) },
             onShareEncrypted = { showShareSheet = false; showSharePassphrase = true },
-            onShareDriveLink = if (driveConnected) ({ showShareSheet = false; shareDriveLink() }) else null,
+            onShareDriveLink = if (driveConnected && state.type != NoteType.EXPENSE) ({ showShareSheet = false; showPublicLinkConfirmation = true }) else null,
             onDismiss = { showShareSheet = false },
         )
     }
@@ -1482,6 +1511,7 @@ fun EditorScreen(
 @Composable
 private fun EditorTopBar(
     saveStatus: SaveStatus,
+    onRetrySave: () -> Unit,
     templateMode: Boolean,
     editing: Boolean,
     onBack: () -> Unit,
@@ -1515,7 +1545,9 @@ private fun EditorTopBar(
             )
             Spacer(Modifier.weight(1f))
         } else {
-            SaveStatusPill(saveStatus)
+            if (saveStatus == SaveStatus.Error) {
+                TextButton(onClick = onRetrySave) { Text("Retry save", color = MaterialTheme.colorScheme.error) }
+            } else SaveStatusPill(saveStatus)
             Spacer(Modifier.weight(1f))
             NeuIconButton(
                 icon = if (editing) Icons.Rounded.Check else Icons.Rounded.Edit,
@@ -1941,6 +1973,7 @@ private fun SaveStatusPill(status: SaveStatus) {
         SaveStatus.Editing -> "Editing…" to MaterialTheme.colorScheme.onSurfaceVariant
         SaveStatus.Saving -> "Saving…" to MaterialTheme.colorScheme.onSurfaceVariant
         SaveStatus.Saved -> "Saved" to MaterialTheme.colorScheme.tertiary
+        SaveStatus.Error -> "Not saved" to MaterialTheme.colorScheme.error
     }
     AnimatedContent(targetState = label, label = "saveStatus") { text ->
         if (text.isNotEmpty()) {

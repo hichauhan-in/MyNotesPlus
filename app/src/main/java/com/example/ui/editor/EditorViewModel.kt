@@ -8,6 +8,8 @@ import com.example.domain.model.CustomTemplate
 import com.example.domain.model.Note
 import com.example.domain.model.NoteType
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -17,11 +19,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-enum class SaveStatus { Idle, Editing, Saving, Saved }
+enum class SaveStatus { Idle, Editing, Saving, Saved, Error }
 
 data class EditorUiState(
     val id: String = UUID.randomUUID().toString(),
@@ -95,6 +99,10 @@ class EditorViewModel : ViewModel() {
     private var persisted = false
     private var autoSaveJob: Job? = null
     private var loaded = false
+    private val saveMutex = Mutex()
+    private var saveGeneration = 0L
+    private var deleting = false
+    private var leaving = false
 
     /** True only once the user has actually changed something in this session. */
     private var dirty = false
@@ -239,45 +247,87 @@ class EditorViewModel : ViewModel() {
         persistNow()
     }
 
+    fun saveBeforeLeaving(onDone: () -> Unit) {
+        if (leaving || deleting) return
+        leaving = true
+        flush()
+        appScope.launch(Dispatchers.Main.immediate) {
+            saveMutex.withLock {
+                leaving = false
+                if (_state.value.templateMode || !dirty) onDone()
+            }
+        }
+    }
+
     private fun persistNow() {
         // Template drafts are saved explicitly via saveTemplate(), never auto-saved as notes.
-        if (_state.value.templateMode) return
+        if (_state.value.templateMode || deleting) return
         // Never save a note the user hasn't actually touched (e.g. opening a template
         // and backing out, or opening an existing note and leaving unchanged).
         if (!dirty) return
         val snapshot = _state.value
-        if (!snapshot.hasContent && !persisted) return
+        if (!snapshot.hasContent && !persisted && saveGeneration == 0L) {
+            dirty = false
+            _state.value = _state.value.copy(saveStatus = SaveStatus.Idle)
+            return
+        }
         dirty = false
-        appScope.launch {
-            _state.value = _state.value.copy(saveStatus = SaveStatus.Saving)
-            repository.saveNote(
-                Note(
-                    id = snapshot.id,
-                    title = snapshot.title,
-                    content = snapshot.content,
-                    type = snapshot.type,
-                    createdAt = snapshot.createdAt,
-                    updatedAt = System.currentTimeMillis(),
-                    isPinned = snapshot.isPinned,
-                    isFavorite = snapshot.isFavorite,
-                    colorArgb = snapshot.colorArgb,
-                    attachments = snapshot.attachments,
-                    tags = snapshot.tags,
-                    folderId = snapshot.folderId,
-                )
-            )
-            persisted = true
-            _state.value = _state.value.copy(saveStatus = SaveStatus.Saved)
+        val generation = ++saveGeneration
+        appScope.launch(Dispatchers.Main.immediate) {
+            saveMutex.withLock {
+                try {
+                    if (generation == saveGeneration && !dirty) _state.value = _state.value.copy(saveStatus = SaveStatus.Saving)
+                    repository.saveNote(
+                        Note(
+                            id = snapshot.id,
+                            title = snapshot.title,
+                            content = snapshot.content,
+                            type = snapshot.type,
+                            createdAt = snapshot.createdAt,
+                            updatedAt = System.currentTimeMillis(),
+                            isPinned = snapshot.isPinned,
+                            isFavorite = snapshot.isFavorite,
+                            colorArgb = snapshot.colorArgb,
+                            attachments = snapshot.attachments,
+                            tags = snapshot.tags,
+                            folderId = snapshot.folderId,
+                        )
+                    )
+                    persisted = true
+                    if (generation == saveGeneration && !dirty) _state.value = _state.value.copy(saveStatus = SaveStatus.Saved)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    if (generation == saveGeneration) {
+                        dirty = true
+                        _state.value = _state.value.copy(saveStatus = SaveStatus.Error)
+                    }
+                }
+            }
         }
     }
 
     /** Move the note to Trash. Returns via [onDone] once complete. */
     fun deleteToTrash(onDone: () -> Unit) {
-        autoSaveJob?.cancel()
-        appScope.launch {
-            if (persisted) repository.setTrashed(_state.value.id, true)
+        flush()
+        deleting = true
+        appScope.launch(Dispatchers.Main.immediate) {
+            saveMutex.withLock {
+                if (dirty) {
+                    deleting = false
+                    return@withLock
+                }
+                try {
+                    if (persisted) repository.setTrashed(_state.value.id, true)
+                    onDone()
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    deleting = false
+                    _state.value = _state.value.copy(saveStatus = SaveStatus.Error)
+                }
+            }
         }
-        onDone()
     }
 
     // ---- Template editor ----

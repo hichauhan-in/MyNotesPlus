@@ -8,7 +8,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,28 +34,38 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.LocalNeuColors
 import com.example.ui.theme.brandGradientHorizontal
 import com.example.ui.theme.neumorphicRaised
-import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -154,59 +163,86 @@ internal fun PageInkLayer(
     penWidthDp: Float,
     scrollState: ScrollState,
     onCommitStroke: (InkStroke) -> Unit,
+    protectedBounds: List<Rect>,
+    horizontalInsetPx: Float,
     modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
 ) {
     val density = LocalDensity.current.density
     val themeInk = MaterialTheme.colorScheme.onSurface
     val live = remember { mutableStateListOf<Offset>() }
-    val scope = rememberCoroutineScope()
+    val commitStroke = rememberUpdatedState(onCommitStroke)
+    var origin by remember { mutableStateOf(Offset.Zero) }
+    val exclusions = protectedBounds.map { it.translate(-origin) }
+    val currentExclusions = rememberUpdatedState(exclusions)
 
     val gesture = if (drawEnabled) {
-        Modifier.pointerInput(penColor, penWidthDp, density) {
+        Modifier.pointerInput(penColor, penWidthDp, density, horizontalInsetPx) {
             awaitEachGesture {
-                val first = awaitFirstDown(requireUnconsumed = false)
+                val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                val bounds = Rect(horizontalInsetPx, 0f, size.width - horizontalInsetPx, size.height.toFloat())
+                fun canDraw(point: Offset) = bounds.contains(point) &&
+                    currentExclusions.value.none { it.contains(point) }
+                if (!canDraw(first.position)) return@awaitEachGesture
                 first.consume()
                 val startScroll = scrollState.value
                 live.clear()
                 live.add(Offset(first.position.x / density, (first.position.y + startScroll) / density))
                 var panning = false
-                while (true) {
-                    val event = awaitPointerEvent()
-                    val pressed = event.changes.count { it.pressed }
-                    if (pressed >= 2 && !panning) {
-                        panning = true
-                        live.clear()
-                    }
-                    if (panning) {
-                        val dy = event.changes.firstOrNull()?.positionChange()?.y ?: 0f
-                        if (dy != 0f) scope.launch { scrollState.scrollBy(-dy) }
-                        event.changes.forEach { it.consume() }
-                    } else {
-                        val change = event.changes.firstOrNull { it.id == first.id }
-                        if (change != null && change.pressed) {
-                            live.add(Offset(change.position.x / density, (change.position.y + startScroll) / density))
-                            change.consume()
+                try {
+                    while (true) {
+                        val event = awaitPointerEvent(pass = PointerEventPass.Initial)
+                        if (event.changes.count { it.pressed } >= 2) {
+                            panning = true
+                            live.clear()
                         }
+                        if (panning) {
+                            val moving = event.changes.filter { it.pressed && it.previousPressed }
+                            val delta = moving.map { it.positionChange().y }.average().toFloat()
+                            if (delta.isFinite()) scrollState.dispatchRawDelta(-delta)
+                            event.changes.forEach { it.consume() }
+                        } else {
+                            val change = event.changes.firstOrNull { it.id == first.id }
+                            if (change != null) {
+                                change.consume()
+                                if (!canDraw(change.position)) break
+                                val point = Offset(change.position.x / density, (change.position.y + startScroll) / density)
+                                if (live.lastOrNull() != point) live.add(point)
+                            }
+                        }
+                        if (event.changes.none { it.pressed }) break
                     }
-                    if (event.changes.none { it.pressed }) break
+                    if (!panning && live.isNotEmpty()) {
+                        commitStroke.value(InkStroke(penColor, penWidthDp, live.toList()))
+                    }
+                } finally {
+                    live.clear()
                 }
-                if (!panning && live.isNotEmpty()) {
-                    onCommitStroke(InkStroke(penColor, penWidthDp, live.toList()))
-                }
-                live.clear()
             }
         }
     } else {
         Modifier
     }
 
-    Canvas(modifier = modifier.fillMaxSize().then(gesture)) {
-        val scroll = scrollState.value.toFloat()
-        strokes.forEach { s ->
-            drawInkPath(s.points, inkColor(s.color, themeInk), s.width * density, density, scroll)
-        }
-        if (live.isNotEmpty()) {
-            drawInkPath(live, inkColor(penColor, themeInk), penWidthDp * density, density, scroll)
+    Box(
+        modifier = modifier.fillMaxSize().clipToBounds()
+            .onGloballyPositioned { origin = it.positionInRoot() }
+            .then(gesture),
+    ) {
+        content()
+        Canvas(Modifier.matchParentSize()) {
+            val scroll = scrollState.value.toFloat()
+            val protectedPath = Path().apply { exclusions.forEach { addRect(it) } }
+            clipRect(left = horizontalInsetPx, right = size.width - horizontalInsetPx) {
+                clipPath(protectedPath, clipOp = ClipOp.Difference) {
+                    strokes.forEach { stroke ->
+                        drawInkPath(stroke.points, inkColor(stroke.color, themeInk), stroke.width * density, density, scroll)
+                    }
+                    if (live.isNotEmpty()) {
+                        drawInkPath(live, inkColor(penColor, themeInk), penWidthDp * density, density, scroll)
+                    }
+                }
+            }
         }
     }
 }

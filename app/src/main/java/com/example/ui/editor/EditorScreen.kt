@@ -945,20 +945,25 @@ fun EditorScreen(
         )
 
         if (!state.templateMode && (editing || noteId != null)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End) {
-                androidx.compose.material3.IconButton(onClick = { showFind = true }) { Icon(Icons.Rounded.Search, "Find in note") }
-                if (editing && state.type != NoteType.EXPENSE) {
-                    androidx.compose.material3.IconButton(onClick = viewModel::undo, enabled = state.canUndo) {
-                        Icon(Icons.Rounded.Undo, "Undo edit")
+            EditorSearchRow(
+                onSearch = { showFind = true },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                actions = if ((editing && state.type != NoteType.EXPENSE) || noteId != null) {
+                    {
+                        if (editing && state.type != NoteType.EXPENSE) {
+                            androidx.compose.material3.IconButton(onClick = viewModel::undo, enabled = state.canUndo) {
+                                Icon(Icons.Rounded.Undo, "Undo edit")
+                            }
+                            androidx.compose.material3.IconButton(onClick = viewModel::redo, enabled = state.canRedo) {
+                                Icon(Icons.Rounded.Redo, "Redo edit")
+                            }
+                        }
+                        if (noteId != null) androidx.compose.material3.IconButton(onClick = { viewModel.loadVersions(); showHistory = true }) {
+                            Icon(Icons.Rounded.History, "Recent versions")
+                        }
                     }
-                    androidx.compose.material3.IconButton(onClick = viewModel::redo, enabled = state.canRedo) {
-                        Icon(Icons.Rounded.Redo, "Redo edit")
-                    }
-                }
-                if (noteId != null) androidx.compose.material3.IconButton(onClick = { viewModel.loadVersions(); showHistory = true }) {
-                    Icon(Icons.Rounded.History, "Recent versions")
-                }
-            }
+                } else null,
+            )
         }
 
         CompositionLocalProvider(LocalReadOnly provides !editing) {

@@ -1,6 +1,8 @@
 package com.example.data.repository
 
 import android.content.Context
+import androidx.room.withTransaction
+import com.example.data.local.AppDatabase
 import com.example.data.attachments.AttachmentStore
 import com.example.data.local.FolderDao
 import com.example.data.local.FolderEntity
@@ -19,6 +21,7 @@ class FolderRepository(
     private val folderDao: FolderDao,
     private val noteDao: NoteDao,
     private val appContext: Context,
+    private val database: AppDatabase,
 ) {
     val allFolders: Flow<List<Folder>> = folderDao.getAllFolders().map { list ->
         list.map { it.toFolder() }
@@ -88,10 +91,15 @@ class FolderRepository(
 
     /** Permanently delete a trashed book, its sub-books and their notes (and image files). */
     suspend fun deleteFolderTreePermanently(id: String) = withContext(Dispatchers.IO) {
-        val subtree = subtreeIds(id)
-        noteDao.getAttachmentsInFolders(subtree).forEach { deleteAttachmentFiles(it) }
-        noteDao.deleteNotesInFolders(subtree)
-        folderDao.deleteFoldersByIds(subtree)
+        val attachments = database.withTransaction {
+            val subtree = subtreeIds(id)
+            val files = noteDao.folderVersionAttachments(subtree) + noteDao.getAttachmentsInFolders(subtree)
+            noteDao.deleteNotesInFolders(subtree)
+            folderDao.deleteFoldersByIds(subtree)
+            files
+        }
+        com.example.data.attachments.AttachmentMaintenance(appContext, database)
+            .removeUnused(attachments.flatMap { it.split(",").filter(String::isNotBlank) })
     }
 
     /** Drop every trashed book row (their notes are cleared separately by emptying the note trash). */
@@ -113,12 +121,6 @@ class FolderRepository(
             childrenByParent[current]?.forEach { queue.add(it.id) }
         }
         return result
-    }
-
-    private fun deleteAttachmentFiles(attachments: String) {
-        attachments.split(",")
-            .filter { it.isNotBlank() }
-            .forEach { AttachmentStore.delete(appContext, it) }
     }
 
     suspend fun moveNoteToFolder(noteId: String, folderId: String?) = withContext(Dispatchers.IO) {

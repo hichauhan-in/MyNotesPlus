@@ -1,6 +1,12 @@
 package com.example.data.repository
 
 import android.content.Context
+import androidx.room.withTransaction
+import com.example.data.local.AppDatabase
+import com.example.data.reminders.NotificationHelper
+import com.example.domain.model.ReminderTiming
+import com.example.domain.model.Checklist
+import com.example.di.AppContainer
 import com.example.data.local.ReminderDao
 import com.example.data.local.ReminderEntity
 import com.example.data.reminders.ReminderScheduler
@@ -14,7 +20,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
 /** Stores reminders, encrypting their title/body at rest just like note content. */
-class ReminderRepository(private val dao: ReminderDao) {
+class ReminderRepository(private val dao: ReminderDao, private val database: AppDatabase) {
 
     val reminders: Flow<List<Reminder>> = dao.getAll()
         .map { list -> list.map { it.toReminder() } }
@@ -33,11 +39,57 @@ class ReminderRepository(private val dao: ReminderDao) {
 
     suspend fun save(reminder: Reminder): Unit = withContext(Dispatchers.IO) {
         // Stamp the change so a newer edit always wins the cloud last-write-wins merge.
+        dao.getById(reminder.id)?.let(::requireReadable)
         dao.upsert(reminder.copy(updatedAt = System.currentTimeMillis()).toEntity())
     }
 
+    suspend fun performAction(context: Context, id: String, occurrenceAt: Long, snooze: Boolean): Unit = withContext(Dispatchers.IO) {
+        val updated = database.withTransaction {
+            val entity = dao.getById(id) ?: return@withTransaction null
+            requireReadable(entity)
+            val reminder = entity.toReminder()
+            if (!ReminderTiming.acceptsAction(reminder, occurrenceAt)) return@withTransaction null
+            if (!snooze && reminder.checklistText != null && reminder.noteId != null) {
+                val notes = AppContainer.noteRepository!!
+                val note = requireNotNull(notes.getNoteById(reminder.noteId)) { "The linked note no longer exists" }
+                require(note.isChecklist && !note.isTrashed) { "Open the linked checklist before completing this reminder" }
+                notes.saveNote(note.copy(content = Checklist.completeMatching(note.content, reminder.checklistText)), note.updatedAt)
+            }
+            val now = System.currentTimeMillis()
+            val next = if (snooze) ReminderTiming.snooze(reminder, now) else ReminderTiming.complete(reminder, now, occurrenceAt)
+            dao.upsert(next.toEntity())
+            next
+        }
+        if (updated != null) {
+            ReminderScheduler.cancel(context, id)
+            if (updated.enabled) ReminderScheduler.schedule(context, updated)
+            androidx.core.app.NotificationManagerCompat.from(context).cancel(id.hashCode())
+            com.example.widget.WidgetUpdater.refreshAll(context)
+        }
+    }
+
+    suspend fun fire(context: Context, id: String, expectedAt: Long?): Unit = withContext(Dispatchers.IO) {
+        val next = database.withTransaction {
+            val entity = dao.getById(id) ?: return@withTransaction null
+            requireReadable(entity)
+            val reminder = entity.toReminder()
+            if (!reminder.enabled || reminder.isCompleted || (expectedAt != null && expectedAt != reminder.effectiveAt) ||
+                reminder.lastNotifiedAt == reminder.effectiveAt) return@withTransaction null
+            if (!NotificationHelper.notify(context, reminder)) return@withTransaction null
+            val delivered = ReminderTiming.delivered(reminder, System.currentTimeMillis())
+            dao.upsert(delivered.toEntity())
+            delivered
+        }
+        if (next != null && next.repeat != ReminderRepeat.NONE) ReminderScheduler.schedule(context, next)
+    }
+
     suspend fun setEnabled(id: String, enabled: Boolean): Unit = withContext(Dispatchers.IO) {
-        dao.setEnabled(id, enabled, System.currentTimeMillis())
+        database.withTransaction {
+            val entity = dao.getById(id) ?: return@withTransaction
+            requireReadable(entity)
+            dao.upsert(entity.copy(enabled = enabled, completedAt = if (enabled) null else entity.completedAt,
+                lastNotifiedAt = if (enabled) null else entity.lastNotifiedAt, updatedAt = System.currentTimeMillis()))
+        }
     }
 
     suspend fun setTriggerAt(id: String, triggerAt: Long): Unit = withContext(Dispatchers.IO) {
@@ -70,17 +122,24 @@ class ReminderRepository(private val dao: ReminderDao) {
         context: Context,
         upserts: List<Reminder>,
         deleteIds: Collection<String>,
+        expected: Map<String, Long>,
     ): Unit = withContext(Dispatchers.IO) {
         val appContext = context.applicationContext
+        database.withTransaction {
+            (upserts.map { it.id } + deleteIds).distinct().forEach { id ->
+                check(dao.getById(id)?.let { if (it.updatedAt == 0L) it.createdAt else it.updatedAt } == expected[id]) { "Reminder changed while syncing; retry sync" }
+            }
         deleteIds.forEach { id ->
             dao.deleteById(id)
-            ReminderScheduler.cancel(appContext, id)
         }
         upserts.forEach { reminder ->
-            // armSynced (re)schedules a future alarm, or normalizes a past reminder to a completed /
-            // advanced state; we persist exactly what it returns (keeping the merged updatedAt).
-            val armed = ReminderScheduler.armSynced(appContext, reminder)
-            dao.upsert(armed.toEntity())
+            dao.upsert(reminder.toEntity())
+        }
+        }
+        deleteIds.forEach { ReminderScheduler.cancel(appContext, it) }
+        upserts.forEach { reminder ->
+            if (reminder.enabled && reminder.effectiveAt > System.currentTimeMillis()) ReminderScheduler.schedule(appContext, reminder)
+            else ReminderScheduler.cancel(appContext, reminder.id)
         }
     }
 
@@ -94,6 +153,11 @@ class ReminderRepository(private val dao: ReminderDao) {
         enabled = enabled,
         createdAt = createdAt,
         updatedAt = if (updatedAt != 0L) updatedAt else createdAt,
+        completedAt = completedAt,
+        lastNotifiedAt = lastNotifiedAt,
+        snoozedUntil = snoozedUntil,
+        repeatAnchorAt = repeatAnchorAt,
+        checklistText = encryptedChecklistText?.let(EncryptionManager::decryptOrNull),
     )
 
     private fun Reminder.toEntity(): ReminderEntity = ReminderEntity(
@@ -106,5 +170,17 @@ class ReminderRepository(private val dao: ReminderDao) {
         enabled = enabled,
         createdAt = createdAt,
         updatedAt = updatedAt,
+        completedAt = completedAt,
+        lastNotifiedAt = lastNotifiedAt,
+        snoozedUntil = snoozedUntil,
+        repeatAnchorAt = repeatAnchorAt,
+        encryptedChecklistText = checklistText?.let(EncryptionManager::encrypt),
     )
+
+    private fun requireReadable(entity: ReminderEntity) {
+        check(EncryptionManager.decryptOrNull(entity.encryptedTitle) != null && EncryptionManager.decryptOrNull(entity.encryptedBody) != null &&
+            (entity.encryptedChecklistText == null || EncryptionManager.decryptOrNull(entity.encryptedChecklistText) != null)) {
+            "This reminder is locked. Its saved content has been preserved."
+        }
+    }
 }

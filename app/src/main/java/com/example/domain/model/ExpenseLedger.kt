@@ -40,6 +40,8 @@ internal data class ExpItem(
     val amount: Long = 0,
     val toAccountId: String? = null,
     val completedAt: Long? = null,
+    val receiptToken: String? = null,
+    val receiptDate: String? = null,
 )
 
 internal data class ExpSection(
@@ -61,6 +63,9 @@ internal data class ExpAccount(
 ) {
     fun pendingOutflow(): Long = sections.filter { it.kind.direction < 0 }
         .sumOf { section -> section.items.filter { it.completedAt == null }.sumOf { it.amount } }
+
+    fun configuredOutflow(): Long = sections.filter { it.kind.direction < 0 }
+        .sumOf { section -> section.items.sumOf { it.amount } }
 }
 
 internal data class ExpTransaction(
@@ -81,6 +86,8 @@ internal data class ExpTransaction(
     val completedAt: Long,
     val reversedAt: Long? = null,
     val reversalOf: String? = null,
+    val receiptToken: String? = null,
+    val receiptDate: String? = null,
 )
 
 internal data class ExpenseModel(
@@ -91,7 +98,6 @@ internal data class ExpenseModel(
         val account = accounts.singleOrNull { it.id == accountId } ?: error("Account no longer exists")
         val section = account.sections.singleOrNull { it.id == sectionId } ?: error("Section no longer exists")
         val item = section.items.singleOrNull { it.id == itemId } ?: error("Transaction no longer exists")
-        require(item.completedAt == null) { "This transaction is already completed" }
         require(item.name.isNotBlank()) { "Add a transaction name" }
         require(item.amount in 1..ExpenseMoney.MAX_MINOR) { "Enter a valid amount greater than zero" }
         require(section.kind != ExpenseKind.ADJUSTMENT) { "Use the balance adjustment control" }
@@ -109,6 +115,7 @@ internal data class ExpenseModel(
             balanceDelta = delta, balanceAfter = balanceAfter,
             toAccountId = target?.id, toAccountName = target?.name, toBalanceAfter = targetBalanceAfter,
             sectionId = section.id, itemId = item.id, completedAt = now,
+            receiptToken = item.receiptToken, receiptDate = item.receiptDate,
         )
         return copy(
             accounts = accounts.map { current ->
@@ -117,7 +124,7 @@ internal data class ExpenseModel(
                         balance = balanceAfter,
                         sections = current.sections.map { currentSection ->
                             if (currentSection.id != sectionId) currentSection else currentSection.copy(
-                                items = currentSection.items.map { if (it.id == itemId) it.copy(completedAt = now) else it },
+                                items = currentSection.items.map { if (it.id == itemId) it.copy(completedAt = now, receiptToken = null, receiptDate = null) else it },
                             )
                         },
                     )
@@ -155,7 +162,13 @@ internal data class ExpenseModel(
                         sections = current.sections.map { section ->
                             if (section.id != transaction.sectionId) section else section.copy(
                                 items = section.items.map { item ->
-                                    if (item.id == transaction.itemId) item.copy(completedAt = null) else item
+                                    if (item.id == transaction.itemId) item.copy(
+                                        completedAt = history.filter {
+                                            it.id != transactionId && it.itemId == item.id &&
+                                                it.accountId == account.id && it.sectionId == section.id &&
+                                                it.reversalOf == null && it.reversedAt == null
+                                        }.maxOfOrNull { it.completedAt },
+                                    ) else item
                                 },
                             )
                         },

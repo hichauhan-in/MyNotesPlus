@@ -47,6 +47,7 @@ private object Routes {
 
 @Composable
 fun MyNotesNavigation(
+    captureModel: com.example.ui.share.CaptureViewModel? = null,
     pendingQuickAction: String? = null,
     onQuickActionHandled: () -> Unit = {},
     pendingOpenNoteId: String? = null,
@@ -56,6 +57,9 @@ fun MyNotesNavigation(
 ) {
     val navController = rememberNavController()
     val dur = 300
+    if (captureModel != null) com.example.ui.share.IncomingCapture(captureModel) { id ->
+        navController.navigate(Routes.editor(noteId = id))
+    }
 
     // A home-screen widget can ask us to open the editor with a specific note type on launch.
     LaunchedEffect(pendingQuickAction) {

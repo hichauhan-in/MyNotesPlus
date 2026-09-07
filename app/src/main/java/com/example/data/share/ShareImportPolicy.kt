@@ -37,7 +37,7 @@ internal object ShareImportPolicy {
         require(content.length <= MAX_CONTENT_CHARS) { "Note is too large" }
         require(AttachmentMarkup.fileNames(content).all { it in replacements }) { "An attachment is missing" }
         val rewritten = AttachmentMarkup.renameFiles(content, replacements)
-        if (!isBoard) return rewritten
+        if (!isBoard || content.isBlank()) return rewritten
         val board = JSONObject(rewritten)
         val images = board.optJSONArray("im")
         if (images != null) for (index in 0 until images.length()) {

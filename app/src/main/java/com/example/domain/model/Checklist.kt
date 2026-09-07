@@ -36,4 +36,16 @@ object Checklist {
 
     fun serialize(items: List<ChecklistItem>): String =
         items.joinToString("\n") { (if (it.checked) "[x] " else "[ ] ") + it.text }
+
+    fun completeMatching(content: String, text: String): String {
+        val items = parse(content)
+        require(items.count { it.text == text } == 1) { "The checklist item changed or is ambiguous. Open the note to complete it." }
+        return serialize(items.map { if (it.text == text) it.copy(checked = true) else it })
+    }
+
+    fun <Item> move(items: List<Item>, from: Int, offset: Int): List<Item> {
+        if (from !in items.indices || offset == 0) return items
+        val destination = (from.toLong() + offset).coerceIn(0, items.lastIndex.toLong()).toInt()
+        return items.toMutableList().apply { add(destination, removeAt(from)) }
+    }
 }

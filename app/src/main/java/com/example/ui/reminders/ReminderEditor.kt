@@ -30,6 +30,9 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -41,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.domain.model.Reminder
@@ -65,8 +69,14 @@ internal fun ReminderEditorSheet(
     prefillBody: String = "",
     prefillNoteId: String? = null,
     prefillTriggerAt: Long? = null,
+    checklistOptions: List<String> = emptyList(),
+    busy: Boolean = false,
+    error: String? = null,
 ) {
     val context = LocalContext.current
+    val locale = LocalConfiguration.current.locales[0]
+    val dateFormat = remember(locale) { SimpleDateFormat("d MMM yyyy", locale) }
+    val timeFormat = remember(locale) { SimpleDateFormat("h:mm a", locale) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val defaultTime = remember {
         Calendar.getInstance().apply {
@@ -79,6 +89,8 @@ internal fun ReminderEditorSheet(
     var body by remember { mutableStateOf(initial?.body ?: prefillBody) }
     var triggerAt by remember { mutableStateOf(initial?.triggerAt ?: prefillTriggerAt ?: defaultTime) }
     var repeat by remember { mutableStateOf(initial?.repeat ?: ReminderRepeat.NONE) }
+    var checklistText by remember { mutableStateOf(initial?.checklistText) }
+    var showChecklistPicker by remember { mutableStateOf(false) }
     val noteId = initial?.noteId ?: prefillNoteId
 
     fun pickDate() {
@@ -105,12 +117,12 @@ internal fun ReminderEditorSheet(
                     set(Calendar.HOUR_OF_DAY, h); set(Calendar.MINUTE, min); set(Calendar.SECOND, 0)
                 }.timeInMillis
             },
-            cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE), false,
+            cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE), android.text.format.DateFormat.is24HourFormat(context),
         ).show()
     }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy) onDismiss() },
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
@@ -145,16 +157,27 @@ internal fun ReminderEditorSheet(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(16.dp))
+            if (checklistOptions.isNotEmpty()) {
+                OutlinedButton(onClick = { showChecklistPicker = true }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                    Text(checklistText ?: "Whole checklist", maxLines = 2)
+                }
+                DropdownMenu(expanded = showChecklistPicker, onDismissRequest = { showChecklistPicker = false }) {
+                    DropdownMenuItem(text = { Text("Whole checklist") }, onClick = { checklistText = null; showChecklistPicker = false })
+                    checklistOptions.distinct().forEach { option ->
+                        DropdownMenuItem(text = { Text(option, maxLines = 2) }, onClick = { checklistText = option; showChecklistPicker = false })
+                    }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ReminderPickerButton(
                     icon = Icons.Rounded.CalendarMonth,
-                    text = SimpleDateFormat("d MMM yyyy", Locale.getDefault()).format(triggerAt),
+                    text = dateFormat.format(triggerAt),
                     modifier = Modifier.weight(1f),
                     onClick = { pickDate() },
                 )
                 ReminderPickerButton(
                     icon = Icons.Rounded.Schedule,
-                    text = SimpleDateFormat("h:mm a", Locale.getDefault()).format(triggerAt),
+                    text = timeFormat.format(triggerAt),
                     modifier = Modifier.weight(1f),
                     onClick = { pickTime() },
                 )
@@ -175,6 +198,7 @@ internal fun ReminderEditorSheet(
                 }
             }
             Spacer(Modifier.height(22.dp))
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (onDelete != null) {
                     TextButton(onClick = onDelete) {
@@ -187,7 +211,7 @@ internal fun ReminderEditorSheet(
                 TextButton(onClick = onDismiss) { Text("Cancel") }
                 Spacer(Modifier.width(4.dp))
                 ReminderSaveButton(
-                    enabled = title.isNotBlank(),
+                    enabled = title.isNotBlank() && !busy && triggerAt > System.currentTimeMillis(),
                     onClick = {
                         onSave(
                             (initial ?: Reminder(title = "", triggerAt = triggerAt, noteId = noteId)).copy(
@@ -196,6 +220,11 @@ internal fun ReminderEditorSheet(
                                 triggerAt = triggerAt,
                                 repeat = repeat,
                                 enabled = true,
+                                completedAt = null,
+                                lastNotifiedAt = null,
+                                snoozedUntil = null,
+                                repeatAnchorAt = if (initial != null && initial.triggerAt == triggerAt && initial.repeat == repeat) initial.repeatAnchorAt else triggerAt,
+                                checklistText = checklistText,
                             ),
                         )
                     },

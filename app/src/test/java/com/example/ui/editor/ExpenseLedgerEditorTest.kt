@@ -47,29 +47,36 @@ class ExpenseLedgerEditorTest {
         }
     }
 
-    @Test fun completionRequiresConfirmationAndCommitsImmediately() {
+    @Test fun recordIsOneTapAndSavedActionRemainsReusable() {
         show(ExpenseKind.CREDIT)
-        compose.onNodeWithText("Complete").performScrollTo().performClick()
-        compose.runOnIdle { assertNull(committed) }
-        compose.onNodeWithText("Confirm").performClick()
+        compose.onNodeWithText("Record").performScrollTo().performClick()
+        compose.onNodeWithText("Confirm").assertDoesNotExist()
         compose.runOnIdle {
             val saved = ExpenseCodec.decode(requireNotNull(committed))
             assertEquals(60_000_00L, saved.accounts.single().balance)
             assertEquals(1, saved.history.size)
         }
-        compose.onNodeWithText("Complete").assertDoesNotExist()
+        compose.onNodeWithText("Record").performScrollTo().performClick()
+        compose.runOnIdle {
+            val saved = ExpenseCodec.decode(requireNotNull(committed))
+            assertEquals(70_000_00L, saved.accounts.single().balance)
+            assertEquals(2, saved.history.size)
+            assertEquals(1, saved.accounts.single().sections.single().items.size)
+        }
+        compose.onNodeWithContentDescription("Edit saved action").assertExists()
     }
 
     @Test fun insufficientFundsDoNotCommit() {
         show(ExpenseKind.EXPENSE, amount = 60_000_00)
-        compose.onNodeWithText("Complete").performScrollTo().performClick()
+        compose.onNodeWithText("Record").performScrollTo().performClick()
         compose.onNodeWithText("Not enough balance in HDFC").assertIsDisplayed()
         compose.runOnIdle { assertNull(committed) }
     }
 
     @Test fun readOnlyTrackerHasNoTransactionOrBalanceMutationControls() {
         show(ExpenseKind.CREDIT, readOnly = true)
-        compose.onNodeWithText("Complete").assertDoesNotExist()
+        compose.onNodeWithText("Record").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Edit saved action").assertDoesNotExist()
         compose.onNodeWithContentDescription("Set or correct balance").assertDoesNotExist()
     }
 }

@@ -46,7 +46,7 @@ googleid = "1.1.1"
 playServicesAuth = "21.3.0"
 mlkitTextRecognition = "16.0.1"
 mlkitEntityExtraction = "16.0.0-beta6"
-mlkitDigitalInk = "18.1.0"
+mlkitDigitalInk = "19.0.0"
 mlkitGenaiSummarization = "1.0.0-beta1"
 
 

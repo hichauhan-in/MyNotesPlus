@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -30,6 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 class MainActivity : FragmentActivity() {
+    private val captureModel by viewModels<com.example.ui.share.CaptureViewModel>()
     // A quick-create action sent from a home-screen widget (note / checklist / expense / board).
     private val pendingQuickAction = mutableStateOf<String?>(null)
 
@@ -45,6 +47,7 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        captureModel.acceptInitial(intent)
 
         pendingQuickAction.value = intent?.getStringExtra(EXTRA_QUICK_ACTION)
         pendingOpenNoteId.value = intent?.getStringExtra(EXTRA_OPEN_NOTE_ID)
@@ -87,6 +90,7 @@ class MainActivity : FragmentActivity() {
                     } else {
                         AppLockGate(enabled = settings.appLockEnabled) {
                             MyNotesNavigation(
+                                captureModel = captureModel,
                                 pendingQuickAction = pendingQuickAction.value,
                                 onQuickActionHandled = { pendingQuickAction.value = null },
                                 pendingOpenNoteId = pendingOpenNoteId.value,
@@ -104,6 +108,7 @@ class MainActivity : FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        captureModel.accept(intent)
         intent.getStringExtra(EXTRA_QUICK_ACTION)?.let { pendingQuickAction.value = it }
         intent.getStringExtra(EXTRA_OPEN_NOTE_ID)?.let { pendingOpenNoteId.value = it }
         if (intent.getBooleanExtra(EXTRA_OPEN_REMINDERS, false)) pendingOpenReminders.value = true

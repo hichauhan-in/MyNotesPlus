@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.asStateFlow
 object SyncStatus {
     private val _syncing = MutableStateFlow(false)
     val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+    internal fun setError(value: String?) { _error.value = value }
 
     internal fun setSyncing(value: Boolean) {
         _syncing.value = value

@@ -29,6 +29,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -94,9 +99,10 @@ internal fun VoiceRecorderSheet(
     var elapsed by remember { mutableStateOf(0) }
     var recording by remember { mutableStateOf(false) }
     var stopped by remember { mutableStateOf(false) }
+    var keepFile by remember { mutableStateOf(false) }
 
     fun stopRecorder(): Boolean {
-        if (stopped) return true
+        if (stopped) return false
         stopped = true
         return runCatching { recorder.stop() }.isSuccess
     }
@@ -125,6 +131,7 @@ internal fun VoiceRecorderSheet(
         onDispose {
             if (!stopped) runCatching { recorder.stop() }
             runCatching { recorder.release() }
+            if (!keepFile) file.delete()
         }
     }
 
@@ -190,7 +197,7 @@ internal fun VoiceRecorderSheet(
                 text = "Save voice note",
                 onClick = {
                     val ok = stopRecorder()
-                    if (ok && file.length() > 0L) onSave(file.name) else discard()
+                    if (ok && file.length() > 0L) { keepFile = true; onSave(file.name) } else discard()
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -214,98 +221,104 @@ internal fun VoiceRecorderSheet(
 internal fun AudioAttachment(name: String, onRemove: () -> Unit) {
     val context = LocalContext.current
     val neu = LocalNeuColors.current
-    var playing by remember { mutableStateOf(false) }
-    var durationSec by remember { mutableStateOf(0) }
-    var audioBytes by remember(name) { mutableStateOf<ByteArray?>(null) }
-    val player = remember { MediaPlayer() }
+    var playing by remember(name) { mutableStateOf(false) }
+    var ready by remember(name) { mutableStateOf(false) }
+    var failed by remember(name) { mutableStateOf(false) }
+    var durationMs by remember(name) { mutableStateOf(0) }
+    var positionMs by remember(name) { mutableStateOf(0) }
+    var seeking by remember(name) { mutableStateOf(false) }
+    var speed by remember(name) { mutableStateOf(1f) }
+    var speedMenu by remember { mutableStateOf(false) }
+    val player = remember(name) { MediaPlayer() }
+    val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager }
+    val focusListener = remember(player) {
+        android.media.AudioManager.OnAudioFocusChangeListener { change ->
+            if (change <= android.media.AudioManager.AUDIOFOCUS_LOSS) {
+                runCatching { if (player.isPlaying) player.pause() }
+                playing = false
+            }
+        }
+    }
     val readOnly = LocalReadOnly.current
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+
+    @Suppress("DEPRECATION")
+    fun pause() {
+        runCatching { if (player.isPlaying) player.pause() }
+        playing = false
+        audioManager.abandonAudioFocus(focusListener)
+    }
 
     LaunchedEffect(name) {
         val bytes = withContext(Dispatchers.IO) { AttachmentStore.readDecrypted(context, name) }
-        audioBytes = bytes
-        val ms = if (bytes == null) 0 else withContext(Dispatchers.IO) {
-            runCatching {
-                val probe = MediaPlayer()
-                probe.setDataSource(BytesMediaDataSource(bytes))
-                probe.prepare()
-                val d = probe.duration
-                probe.release()
-                d
-            }.getOrDefault(0)
+        if (bytes == null) { failed = true; return@LaunchedEffect }
+        runCatching {
+            player.setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            player.setDataSource(BytesMediaDataSource(bytes))
+            player.setOnPreparedListener { durationMs = it.duration.coerceAtLeast(0); ready = true }
+            player.setOnCompletionListener { positionMs = durationMs; pause() }
+            player.setOnErrorListener { _, _, _ -> failed = true; ready = false; pause(); true }
+            player.prepareAsync()
+        }.onFailure { failed = true; ready = false }
+    }
+
+    LaunchedEffect(playing) {
+        while (playing) {
+            if (!seeking) positionMs = runCatching { player.currentPosition.coerceIn(0, durationMs) }.getOrDefault(positionMs)
+            delay(250)
         }
-        durationSec = ms / 1000
     }
 
-    DisposableEffect(Unit) {
-        onDispose { runCatching { player.reset(); player.release() } }
+    DisposableEffect(player, lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event -> if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) pause() }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer); pause(); runCatching { player.release() } }
     }
 
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .neumorphicRaised(18.dp, neu, elevation = 6.dp)
             .clip(RoundedCornerShape(18.dp))
             .background(MaterialTheme.colorScheme.surface)
             .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier
-                .size(46.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
-                .clickable {
-                    val bytes = audioBytes
-                    if (playing) {
-                        runCatching { player.pause() }
-                        playing = false
-                    } else if (bytes != null) {
-                        runCatching {
-                            player.reset()
-                            player.setDataSource(BytesMediaDataSource(bytes))
-                            player.setOnCompletionListener { playing = false }
-                            player.prepare()
-                            player.start()
-                            playing = true
-                        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(enabled = ready && !failed, onClick = {
+                if (playing) pause() else runCatching {
+                    @Suppress("DEPRECATION")
+                    val focus = audioManager.requestAudioFocus(focusListener, android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    if (focus == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                        if (positionMs >= durationMs) { player.seekTo(0); positionMs = 0 }
+                        player.start()
+                        player.playbackParams = android.media.PlaybackParams().setSpeed(speed)
+                        playing = true
                     }
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                contentDescription = if (playing) "Pause" else "Play",
-                tint = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.size(24.dp),
-            )
+                }.onFailure { failed = true; pause() }
+            }) { Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playing) "Pause recording" else "Play recording") }
+            Column(Modifier.weight(1f)) {
+                Text("Voice note", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(if (failed) "Recording unavailable" else if (!ready) "Loading..." else "${formatClock(positionMs / 1000)} / ${formatClock(durationMs / 1000)}", style = MaterialTheme.typography.bodySmall)
+            }
+            Box {
+                TextButton(enabled = ready && !failed, onClick = { speedMenu = true }) { Text("${speed}x") }
+                DropdownMenu(expanded = speedMenu, onDismissRequest = { speedMenu = false }) {
+                    listOf(0.75f, 1f, 1.25f, 1.5f, 2f).forEach { value ->
+                        DropdownMenuItem(text = { Text("${value}x") }, onClick = {
+                            speed = value
+                            speedMenu = false
+                            if (playing) runCatching { player.playbackParams = android.media.PlaybackParams().setSpeed(value) }
+                        })
+                    }
+                }
+            }
+            if (!readOnly) IconButton(onClick = onRemove) { Icon(Icons.Rounded.Close, "Remove voice note") }
         }
-        Spacer(Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Voice note",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = if (playing) "Playing…" else formatClock(durationSec),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(CircleShape)
-                .clickable(enabled = !readOnly, onClick = onRemove),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Close,
-                contentDescription = "Remove voice note",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
-        }
+        Slider(value = positionMs.toFloat().coerceIn(0f, durationMs.coerceAtLeast(1).toFloat()),
+            onValueChange = { seeking = true; positionMs = it.toInt() },
+            onValueChangeFinished = { runCatching { player.seekTo(positionMs) }; seeking = false },
+            valueRange = 0f..durationMs.coerceAtLeast(1).toFloat(), enabled = ready && !failed,
+            modifier = Modifier.fillMaxWidth())
     }
 }

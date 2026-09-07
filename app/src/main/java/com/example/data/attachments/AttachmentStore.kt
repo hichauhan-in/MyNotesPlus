@@ -117,10 +117,19 @@ object AttachmentStore {
 
     /** Copies a picked content Uri into private storage (encrypted); returns the stored name or null. */
     fun importFromUri(context: Context, uri: Uri): String? = runCatching {
-        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+        require(uri.scheme == "content")
+        val bytes = context.contentResolver.openInputStream(uri)?.use { com.example.data.share.ShareImportPolicy.readBounded(it, 32 * 1024 * 1024) } ?: return null
         val file = newImageFile(context)
         if (writeEncrypted(context, file.name, bytes)) file.name else null
     }.getOrNull()
+
+    fun importAudioFromUri(context: Context, uri: Uri): String {
+        require(uri.scheme == "content") { "Only shared content URIs are supported" }
+        val bytes = requireNotNull(context.contentResolver.openInputStream(uri)).use { com.example.data.share.ShareImportPolicy.readBounded(it, 32 * 1024 * 1024) }
+        val name = newAudioFile(context).name
+        check(writeEncrypted(context, name, bytes)) { "Could not save the recording" }
+        return name
+    }
 
     /** Writes a bitmap (e.g. a cropped image) into a fresh private encrypted JPEG; returns its name. */
     fun saveBitmap(context: Context, bitmap: android.graphics.Bitmap): String? = runCatching {

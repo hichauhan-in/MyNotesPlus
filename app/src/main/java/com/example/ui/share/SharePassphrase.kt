@@ -26,6 +26,9 @@ import com.example.data.share.NoteSharing
 fun SharePassphraseDialog(
     onConfirm: (CharArray) -> Unit,
     onDismiss: () -> Unit,
+    title: String = "Share encrypted",
+    description: String = "Choose a passphrase to lock this note. Share it with the other person separately - they'll need it to open the note inside MyNotes.",
+    confirmLabel: String = "Share",
 ) {
     var pass by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
@@ -35,12 +38,11 @@ fun SharePassphraseDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Share encrypted", fontWeight = FontWeight.Bold) },
+        title = { Text(title, fontWeight = FontWeight.Bold) },
         text = {
             Column {
                 Text(
-                    "Choose a passphrase to lock this note. Share it with the other person separately - " +
-                        "they'll need it to open the note inside MyNotes.",
+                    description,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -83,7 +85,7 @@ fun SharePassphraseDialog(
         },
         confirmButton = {
             TextButton(enabled = valid, onClick = { onConfirm(pass.toCharArray()) }) {
-                Text("Share", fontWeight = FontWeight.SemiBold)
+                Text(confirmLabel, fontWeight = FontWeight.SemiBold)
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
@@ -97,15 +99,17 @@ fun ImportPassphraseDialog(
     busy: Boolean,
     onConfirm: (CharArray) -> Unit,
     onDismiss: () -> Unit,
+    title: String = "Open shared note",
+    description: String = "Enter the passphrase the sender gave you to unlock this note.",
 ) {
     var pass by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Open shared note", fontWeight = FontWeight.Bold) },
+        title = { Text(title, fontWeight = FontWeight.Bold) },
         text = {
             Column {
                 Text(
-                    "Enter the passphrase the sender gave you to unlock this note.",
+                    description,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

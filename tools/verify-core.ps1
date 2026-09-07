@@ -1,6 +1,7 @@
 param(
     [string]$ToolchainRoot = (Join-Path $env:TEMP 'mynotes-validation-2.2.10'),
-    [switch]$InstallToolchain
+    [switch]$InstallToolchain,
+    [string[]]$TestClass
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,6 +38,25 @@ $java = Get-ChildItem (Join-Path $ToolchainRoot 'java') -Filter java.exe -Recurs
 if (-not $java) { throw 'Run with -InstallToolchain to prepare a temporary Java/Kotlin test environment.' }
 $classpath = "$ToolchainRoot\kotlinc\lib\kotlin-stdlib.jar;$ToolchainRoot\junit.jar;$ToolchainRoot\hamcrest.jar;$ToolchainRoot\json.jar"
 $sources = @(
+    'app/src/main/java/com/example/domain/model/Checklist.kt',
+    'app/src/test/java/com/example/domain/model/ChecklistTest.kt',
+    'app/src/main/java/com/example/domain/model/ReceiptDraft.kt',
+    'app/src/test/java/com/example/domain/model/ReceiptParserTest.kt',
+    'app/src/main/java/com/example/domain/model/Reminder.kt',
+    'app/src/main/java/com/example/domain/model/ReminderTiming.kt',
+    'app/src/test/java/com/example/domain/model/ReminderTimingTest.kt',
+    'app/src/main/java/com/example/data/share/TextImportPolicy.kt',
+    'app/src/test/java/com/example/data/share/TextImportPolicyTest.kt',
+    'app/src/main/java/com/example/domain/model/ReadableContent.kt',
+    'app/src/test/java/com/example/domain/model/ReadableContentTest.kt',
+    'app/src/main/java/com/example/data/sync/SyncMergePolicy.kt',
+    'app/src/test/java/com/example/data/sync/SyncMergePolicyTest.kt',
+    'app/src/main/java/com/example/domain/model/EditHistory.kt',
+    'app/src/test/java/com/example/domain/model/EditHistoryTest.kt',
+    'app/src/main/java/com/example/data/backup/VaultManifest.kt',
+    'app/src/test/java/com/example/data/backup/VaultManifestTest.kt',
+    'app/src/main/java/com/example/data/backup/VaultArchive.kt',
+    'app/src/test/java/com/example/data/backup/VaultArchiveTest.kt',
     'app/src/main/java/com/example/domain/model/ExpenseLedger.kt',
     'app/src/main/java/com/example/data/local/ExpenseCodec.kt',
     'app/src/main/java/com/example/data/export/ExpenseReport.kt',
@@ -48,11 +68,22 @@ $sources = @(
     'app/src/test/java/com/example/data/share/ShareImportPolicyTest.kt'
 )
 $suites = @(
+    'com.example.domain.model.ChecklistTest',
+    'com.example.domain.model.ReceiptParserTest',
+    'com.example.domain.model.ReminderTimingTest',
+    'com.example.data.share.TextImportPolicyTest',
+    'com.example.domain.model.ReadableContentTest',
+    'com.example.data.sync.SyncMergePolicyTest',
+    'com.example.domain.model.EditHistoryTest',
+    'com.example.data.backup.VaultManifestTest',
+    'com.example.data.backup.VaultArchiveTest',
     'com.example.domain.model.ExpenseLedgerTest',
     'com.example.data.local.ExpenseCodecTest',
     'com.example.data.export.ExpenseReportTest',
     'com.example.data.share.ShareImportPolicyTest'
 )
+
+if ($TestClass) { $suites = $TestClass }
 
 Push-Location (Join-Path $PSScriptRoot '..')
 try {

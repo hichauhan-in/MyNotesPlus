@@ -14,10 +14,10 @@ import java.util.Calendar
 object ReminderScheduler {
 
     fun schedule(context: Context, reminder: Reminder) {
-        if (!reminder.enabled) return
+        if (!reminder.enabled || reminder.isCompleted || reminder.lastNotifiedAt == reminder.effectiveAt) return
         val am = context.getSystemService(AlarmManager::class.java) ?: return
-        val pi = pendingIntent(context, reminder.id)
-        val at = reminder.triggerAt
+        val pi = pendingIntent(context, reminder.id, reminder.effectiveAt)
+        val at = reminder.effectiveAt
         try {
             if (canExact(am)) {
                 am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
@@ -54,16 +54,16 @@ object ReminderScheduler {
             return reminder
         }
         val now = System.currentTimeMillis()
-        if (reminder.triggerAt > now) {
+        if (reminder.effectiveAt > now) {
             schedule(context, reminder)
             return reminder
         }
         // Past due at the moment we learned about it via sync - do not fire it immediately.
         return if (reminder.repeat == ReminderRepeat.NONE) {
             cancel(context, reminder.id)
-            reminder.copy(enabled = false, updatedAt = now)
+            reminder
         } else {
-            val next = nextOccurrence(reminder.triggerAt, reminder.repeat, now)
+            val next = nextOccurrence(reminder.repeatAnchorAt, reminder.repeat, now)
             if (next == null) {
                 cancel(context, reminder.id)
                 reminder.copy(enabled = false, updatedAt = now)
@@ -86,26 +86,16 @@ object ReminderScheduler {
 
     /** The next fire time strictly after [from] for a repeating reminder, or null for a one-shot. */
     fun nextOccurrence(triggerAt: Long, repeat: ReminderRepeat, from: Long = System.currentTimeMillis()): Long? {
-        if (repeat == ReminderRepeat.NONE) return null
-        val cal = Calendar.getInstance().apply { timeInMillis = triggerAt }
-        // Advance until strictly in the future so a device that was off doesn't fire a backlog.
-        do {
-            when (repeat) {
-                ReminderRepeat.DAILY -> cal.add(Calendar.DAY_OF_YEAR, 1)
-                ReminderRepeat.WEEKLY -> cal.add(Calendar.WEEK_OF_YEAR, 1)
-                ReminderRepeat.MONTHLY -> cal.add(Calendar.MONTH, 1)
-                ReminderRepeat.NONE -> return null
-            }
-        } while (cal.timeInMillis <= from)
-        return cal.timeInMillis
+        return com.example.domain.model.ReminderTiming.nextOccurrence(triggerAt, repeat, from)
     }
 
-    private fun pendingIntent(context: Context, id: String): PendingIntent {
+    private fun pendingIntent(context: Context, id: String, expectedAt: Long? = null): PendingIntent {
         val intent = Intent(context, ReminderReceiver::class.java).apply {
             action = ReminderReceiver.ACTION_FIRE
             // A unique data Uri keeps each reminder's PendingIntent distinct.
             data = Uri.parse("mynotes://reminder/$id")
             putExtra(ReminderReceiver.EXTRA_ID, id)
+            if (expectedAt != null) putExtra(ReminderReceiver.EXTRA_AT, expectedAt)
         }
         return PendingIntent.getBroadcast(
             context,

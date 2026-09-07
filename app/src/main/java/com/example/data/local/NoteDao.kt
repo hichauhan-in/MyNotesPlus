@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 /** Minimal projection (id + last-modified) used by cloud sync to compare without decrypting. */
@@ -11,8 +12,41 @@ data class NoteStamp(val id: String, val updatedAt: Long)
 
 @Dao
 interface NoteDao {
+    @Insert
+    suspend fun insertVersion(version: NoteVersionEntity)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertRestoredVersions(versions: List<NoteVersionEntity>)
+
+    @Query("SELECT * FROM note_versions ORDER BY updatedAt DESC, id DESC")
+    suspend fun getAllVersionsOnce(): List<NoteVersionEntity>
+
+    @Query("SELECT * FROM note_versions WHERE noteId = :noteId ORDER BY updatedAt DESC, id DESC LIMIT 20")
+    fun versions(noteId: String): Flow<List<NoteVersionEntity>>
+
+    @Query("SELECT * FROM note_versions WHERE id = :id")
+    suspend fun getVersion(id: String): NoteVersionEntity?
+
+    @Query("DELETE FROM note_versions WHERE noteId = :noteId AND id NOT IN (SELECT id FROM note_versions WHERE noteId = :noteId ORDER BY updatedAt DESC, id DESC LIMIT 20)")
+    suspend fun trimVersions(noteId: String)
+
+    @Query("SELECT attachments FROM note_versions WHERE noteId = :noteId")
+    suspend fun versionAttachments(noteId: String): List<String>
+
+    @Query("SELECT attachments FROM note_versions WHERE noteId IN (SELECT id FROM notes WHERE isTrashed = 1 AND updatedAt < :cutoff)")
+    suspend fun trashedVersionAttachments(cutoff: Long): List<String>
+
+    @Query("SELECT attachments FROM note_versions WHERE noteId IN (SELECT id FROM notes WHERE folderId IN (:folderIds))")
+    suspend fun folderVersionAttachments(folderIds: List<String>): List<String>
+
     @Query("SELECT * FROM notes ORDER BY isPinned DESC, updatedAt DESC")
     fun getAllNotes(): Flow<List<NoteEntity>>
+
+    @Query("SELECT * FROM notes ORDER BY isPinned DESC, updatedAt DESC")
+    suspend fun getAllNotesOnce(): List<NoteEntity>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertRestoredNotes(notes: List<NoteEntity>)
 
     /** Emits on every write to the notes table - a lightweight "something changed" signal. */
     @Query("SELECT COUNT(*) FROM notes")
@@ -24,7 +58,7 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE id = :id")
     suspend fun getNoteById(id: String): NoteEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Upsert
     suspend fun insertNote(note: NoteEntity)
 
     @Query("UPDATE notes SET isPinned = :value, updatedAt = :updatedAt WHERE id = :id")
@@ -94,6 +128,9 @@ interface NoteDao {
 
 @Dao
 interface FolderDao {
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertRestoredFolders(folders: List<FolderEntity>)
+
     @Query("SELECT * FROM folders ORDER BY name ASC")
     fun getAllFolders(): Flow<List<FolderEntity>>
 

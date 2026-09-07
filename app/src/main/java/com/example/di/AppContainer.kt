@@ -17,6 +17,7 @@ import kotlinx.coroutines.SupervisorJob
  */
 object AppContainer {
     private var database: AppDatabase? = null
+    internal val localDatabase: AppDatabase get() = checkNotNull(database)
 
     /** Process-lifetime scope for work that must outlive a screen (e.g. final autosave). */
     val applicationScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -52,11 +53,13 @@ object AppContainer {
                     AppDatabase.MIGRATION_5_6,
                     AppDatabase.MIGRATION_6_7,
                     AppDatabase.MIGRATION_7_8,
+                    AppDatabase.MIGRATION_8_9,
+                    AppDatabase.MIGRATION_9_10,
                 )
                 .build()
-            noteRepository = NoteRepository(database!!.noteDao(), context.applicationContext)
-            folderRepository = FolderRepository(database!!.folderDao(), database!!.noteDao(), context.applicationContext)
-            reminderRepository = ReminderRepository(database!!.reminderDao())
+            noteRepository = NoteRepository(database!!.noteDao(), context.applicationContext, database!!)
+            folderRepository = FolderRepository(database!!.folderDao(), database!!.noteDao(), context.applicationContext, database!!)
+            reminderRepository = ReminderRepository(database!!.reminderDao(), database!!)
         }
         if (settingsRepository == null) {
             settingsRepository = SettingsRepository(context.applicationContext)

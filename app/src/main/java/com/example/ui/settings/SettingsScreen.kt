@@ -110,6 +110,7 @@ fun SettingsScreen(
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val syncState by viewModel.syncState.collectAsStateWithLifecycle()
+    val automaticSyncError by com.example.data.sync.SyncStatus.error.collectAsStateWithLifecycle()
     val insets = WindowInsets.systemBars.asPaddingValues()
     val contentSidePadding = responsiveHorizontalPadding(compact = 20.dp)
     var showAppInfo by remember { mutableStateOf(false) }
@@ -277,6 +278,8 @@ fun SettingsScreen(
 
             // ---- Cloud ----
             SettingsSection(title = "Backup & Sync", icon = Icons.Rounded.CloudUpload) {
+                BackupControls()
+                SettingsDivider()
                 when {
                     syncState.connecting || syncState.busy -> {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -338,7 +341,7 @@ fun SettingsScreen(
                         )
                     }
                 }
-                syncState.error?.let { error ->
+                (syncState.error ?: automaticSyncError.takeIf { settings.driveAccountEmail != null })?.let { error ->
                     Spacer(Modifier.height(10.dp))
                     Text(
                         text = error,
@@ -349,7 +352,7 @@ fun SettingsScreen(
                 Spacer(Modifier.height(12.dp))
                 InfoBanner(
                     icon = Icons.Rounded.Shield,
-                    text = "Every note is encrypted on this device before anything is uploaded, so only unreadable blobs reach Google Drive. The key that unlocks them is protected by your recovery passphrase and is never shared - so neither Google, nor anyone you accidentally share a Drive folder with, can read your notes. Enter the same passphrase on a new device to restore everything.",
+                    text = "Drive sync is encrypted and covers note records, templates and reminders. Images, recordings and book structure are included in local encrypted backups, not Drive sync. Keep your recovery passphrases safe.",
                     tint = MaterialTheme.colorScheme.tertiary,
                 )
             }
@@ -364,14 +367,7 @@ fun SettingsScreen(
                     title = "Notification settings",
                     subtitle = "Manage how reminders alert you",
                     trailingIcon = Icons.Rounded.OpenInNew,
-                    onClick = {
-                        runCatching {
-                            notifContext.startActivity(
-                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                                    .putExtra(Settings.EXTRA_APP_PACKAGE, notifContext.packageName),
-                            )
-                        }
-                    },
+                    onClick = { com.example.data.reminders.NotificationHelper.openSettings(notifContext) },
                 )
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     SettingsDivider()

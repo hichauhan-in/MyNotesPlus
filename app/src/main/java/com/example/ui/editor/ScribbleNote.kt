@@ -657,7 +657,6 @@ internal fun ScribbleEditor(
                                 },
                                 onCrop = { cropImageId = img.id },
                                 onDelete = {
-                                    AttachmentStore.delete(context, img.attachment)
                                     update(model.copy(images = model.images.filterNot { it.id == img.id }))
                                 },
                             )
@@ -732,7 +731,6 @@ internal fun ScribbleEditor(
                     },
                     onClear = {
                         if (model.strokes.isNotEmpty() || model.shapes.isNotEmpty() || model.images.isNotEmpty() || model.texts.isNotEmpty()) {
-                            model.images.forEach { AttachmentStore.delete(context, it.attachment) }
                             update(model.copy(strokes = emptyList(), shapes = emptyList(), images = emptyList(), texts = emptyList()))
                         }
                     },
@@ -753,7 +751,6 @@ internal fun ScribbleEditor(
         ImageCropDialog(
             name = cropTarget.attachment,
             onCropped = { newName ->
-                val oldName = cropTarget.attachment
                 val targetId = cropTarget.id
                 cropImageId = null
                 scope.launch {
@@ -768,7 +765,6 @@ internal fun ScribbleEditor(
                             },
                         ),
                     )
-                    if (newName != oldName) withContext(Dispatchers.IO) { AttachmentStore.delete(context, oldName) }
                 }
             },
             onDismiss = { cropImageId = null },

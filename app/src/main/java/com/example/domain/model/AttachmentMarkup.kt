@@ -1,5 +1,8 @@
 package com.example.domain.model
 
+import org.json.JSONArray
+import org.json.JSONObject
+
 /** The kind of inline attachment a token refers to. */
 enum class AttachmentKind { IMAGE, AUDIO }
 
@@ -34,13 +37,50 @@ object AttachmentMarkup {
     fun audioToken(fileName: String): String = "![audio](attachment://$fileName)"
 
     /** File names of every inline attachment (images + audio), in order. Used for cleanup. */
-    fun fileNames(content: String): List<String> =
-        TOKEN.findAll(content).map { it.groupValues[2] }.toList()
+    fun fileNames(content: String): List<String> {
+        val structured = structuredContent(content)
+        if (structured == null) return TOKEN.findAll(content).map { it.groupValues[2] }.distinct().toList()
+        val names = linkedSetOf<String>()
+        transformStrings(structured, transform = { value ->
+            TOKEN.findAll(value).forEach { names.add(it.groupValues[2]) }
+            value
+        })
+        structured.optJSONArray("im")?.let { images ->
+            for (index in 0 until images.length()) images.optJSONObject(index)?.optString("a")?.takeIf(String::isNotBlank)?.let(names::add)
+        }
+        return names.toList()
+    }
 
-    fun renameFiles(content: String, replacements: Map<String, String>): String = TOKEN.replace(content) { match ->
-        val name = replacements[match.groupValues[2]] ?: return@replace match.value
-        val width = match.groupValues[3].takeIf { it.isNotEmpty() }?.let { "?w=$it" }.orEmpty()
-        "![${match.groupValues[1]}](attachment://$name$width)"
+    fun renameFiles(content: String, replacements: Map<String, String>): String {
+        fun replace(value: String): String = TOKEN.replace(value) { match ->
+            val name = replacements[match.groupValues[2]] ?: return@replace match.value
+            val width = match.groupValues[3].takeIf { it.isNotEmpty() }?.let { "?w=$it" }.orEmpty()
+            "![${match.groupValues[1]}](attachment://$name$width)"
+        }
+        val structured = structuredContent(content) ?: return replace(content)
+        transformStrings(structured, ::replace)
+        return structured.toString()
+    }
+
+    private fun structuredContent(content: String): JSONObject? {
+        if (!content.trimStart().startsWith("{")) return null
+        return runCatching { JSONObject(content) }.getOrNull()?.takeIf {
+            it.has("im") || (it.has("accounts") && it.optInt("version") >= 4)
+        }
+    }
+
+    private fun transformStrings(value: Any?, transform: (String) -> String, depth: Int = 0) {
+        require(depth <= 32) { "Attachment structure is too deeply nested" }
+        when (value) {
+            is JSONObject -> value.keys().asSequence().toList().forEach { key ->
+                val child = value.get(key)
+                if (child is String) value.put(key, transform(child)) else transformStrings(child, transform, depth + 1)
+            }
+            is JSONArray -> for (index in 0 until value.length()) {
+                val child = value.get(index)
+                if (child is String) value.put(index, transform(child)) else transformStrings(child, transform, depth + 1)
+            }
+        }
     }
 
     /** If [line] is exactly an attachment token, returns its parsed reference; otherwise null. */

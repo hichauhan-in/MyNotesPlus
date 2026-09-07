@@ -17,4 +17,9 @@ data class ReminderEntity(
     val createdAt: Long,
     /** Last create/change time - used as the last-write-wins tiebreaker during cloud sync. */
     val updatedAt: Long = 0L,
+    val completedAt: Long? = null,
+    val lastNotifiedAt: Long? = null,
+    val snoozedUntil: Long? = null,
+    val repeatAnchorAt: Long = triggerAt,
+    val encryptedChecklistText: String? = null,
 )

@@ -2,6 +2,20 @@
 
 Prepared 7 September 2026. This is a release checklist, not a compliance certificate or a guarantee of Google Play approval.
 
+## Daily-use Update
+
+The subsequent implementation is documented in [DAILY_USE_UPDATE.md](DAILY_USE_UPDATE.md). It supersedes
+the original pending/completed-row and confirmation workflow below: expense schema 5 uses reusable
+saved actions with one-tap Record and independent execution history. Existing data is preserved through
+Room migrations 8 -> 9 -> 10. Update every device before editing these trackers or actionable reminders.
+
+Android compilation, the full debug unit-test suite, debug APK assembly and debug/release lint have now been
+run using a temporary matching Gradle/JDK/SDK toolchain. Phone/tablet screenshot captures and schema-8
+upgrade tests were added. The Digital Ink 19.0.0 update resolves the native 16 KB alignment lint warning;
+API-24/25 notification-settings and smart-text guards have focused tests. See the update document for results and remaining real-device, Drive,
+signing and Play Console gates; earlier statements that no Android toolchain was available describe
+the original review environment, not the current verification capability.
+
 ## Implemented
 
 - Expenses use integer paise and explicit pending/completed transactions. Credits add to the source balance; expenses, savings and investments subtract; internal transfers debit and credit together. Budget-only records do not change balances.

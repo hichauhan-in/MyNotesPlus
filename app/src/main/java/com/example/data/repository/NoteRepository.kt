@@ -1,9 +1,12 @@
 package com.example.data.repository
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.example.data.attachments.AttachmentStore
+import com.example.data.local.AppDatabase
 import com.example.data.local.NoteDao
 import com.example.data.local.NoteEntity
+import com.example.data.local.NoteVersionEntity
 import com.example.data.security.EncryptionManager
 import com.example.domain.model.Note
 import com.example.domain.model.NoteType
@@ -22,7 +25,41 @@ import java.util.concurrent.TimeUnit
 class NoteRepository(
     private val noteDao: NoteDao,
     private val appContext: Context,
+    private val database: AppDatabase,
 ) {
+    fun versions(noteId: String): Flow<List<NoteVersionEntity>> = noteDao.versions(noteId)
+
+    suspend fun versionContent(noteId: String, id: String): Triple<String, String, List<String>>? = withContext(Dispatchers.IO) {
+        noteDao.getVersion(id)?.let { version ->
+            if (version.noteId != noteId) return@withContext null
+            val title = EncryptionManager.decryptOrNull(version.encryptedTitle) ?: return@withContext null
+            val content = EncryptionManager.decryptOrNull(version.encryptedContent) ?: return@withContext null
+            Triple(title, content, version.attachments.split(",").filter(String::isNotBlank))
+        }
+    }
+
+    suspend fun duplicate(note: Note, title: String = "${note.title.ifBlank { "Untitled" }} (Copy)"): String = withContext(Dispatchers.IO) {
+        val written = mutableListOf<String>()
+        try {
+            val names = (note.attachments + com.example.domain.model.AttachmentMarkup.fileNames(note.content)).distinct()
+            val replacements = names.associateWith { name -> com.example.data.share.ShareImportPolicy.freshName(name) }
+            val content = com.example.data.share.ShareImportPolicy.renameContent(note.content, note.type == NoteType.SCRIBBLE, replacements)
+            names.forEach { original ->
+                val name = replacements.getValue(original)
+                val bytes = requireNotNull(AttachmentStore.readDecrypted(appContext, original)) { "An attachment could not be recovered" }
+                written.add(name)
+                check(AttachmentStore.writeEncrypted(appContext, name, bytes)) { "An attachment could not be saved" }
+            }
+            val now = System.currentTimeMillis()
+            val copy = note.copy(id = UUID.randomUUID().toString(), title = title, content = content, attachments = replacements.values.toList(),
+                isTrashed = false, isArchived = false, isPinned = false, createdAt = now, updatedAt = now)
+            saveNote(copy)
+            copy.id
+        } catch (failure: Exception) {
+            written.forEach { AttachmentStore.delete(appContext, it) }
+            throw failure
+        }
+    }
 
     val allNotes: Flow<List<Note>> = noteDao.getAllNotes()
         .map { entities -> entities.map { it.toNote() } }
@@ -36,8 +73,10 @@ class NoteRepository(
     suspend fun getNoteById(id: String): Note? = withContext(Dispatchers.IO) {
         noteDao.getNoteById(id)?.toNote()
     }
-    suspend fun saveNote(note: Note): Unit = withContext(Dispatchers.IO) {
+    suspend fun saveNote(note: Note, expectedUpdatedAt: Long? = null): Unit = withContext(Dispatchers.IO) {
+        database.withTransaction {
         val existing = noteDao.getNoteById(note.id)
+        check(expectedUpdatedAt == null || existing?.updatedAt == expectedUpdatedAt) { "This note changed. Please retry." }
         // Safety net: never overwrite a note whose stored content can't be decrypted right now.
         // The original encrypted bytes may still be recoverable once the key is available again,
         // so we refuse the save rather than replacing them with freshly-encrypted placeholder text.
@@ -60,7 +99,13 @@ class NoteRepository(
             type = note.type.name,
             attachments = note.attachments.joinToString(","),
         )
+        if (existing != null && (EncryptionManager.decryptOrNull(existing.encryptedTitle) != note.title ||
+                EncryptionManager.decryptOrNull(existing.encryptedContent) != note.content || existing.attachments != entity.attachments)) {
+            noteDao.insertVersion(NoteVersionEntity.from(existing))
+        }
         noteDao.insertNote(entity)
+        noteDao.trimVersions(entity.id)
+        }
     }
 
     suspend fun setPinned(id: String, value: Boolean) = withContext(Dispatchers.IO) {
@@ -84,28 +129,39 @@ class NoteRepository(
     }
 
     suspend fun deletePermanently(id: String) = withContext(Dispatchers.IO) {
-        noteDao.getNoteById(id)?.let { deleteAttachmentFiles(it.attachments) }
-        noteDao.deleteNoteById(id)
+        val attachments = database.withTransaction {
+            val files = noteDao.versionAttachments(id) + listOfNotNull(noteDao.getNoteById(id)?.attachments)
+            noteDao.deleteNoteById(id)
+            files
+        }
+        deleteAttachmentFiles(attachments)
     }
 
     suspend fun emptyTrash() = withContext(Dispatchers.IO) {
-        noteDao.getTrashedAttachments().forEach { deleteAttachmentFiles(it) }
-        noteDao.emptyTrash()
+        val attachments = database.withTransaction {
+            val files = noteDao.trashedVersionAttachments(Long.MAX_VALUE) + noteDao.getTrashedAttachments()
+            noteDao.emptyTrash()
+            files
+        }
+        deleteAttachmentFiles(attachments)
     }
 
     /** Permanently deletes trashed notes last touched before [retentionDays] ago. No-op if 0. */
     suspend fun purgeTrashOlderThan(retentionDays: Int) = withContext(Dispatchers.IO) {
         if (retentionDays <= 0) return@withContext
         val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(retentionDays.toLong())
-        noteDao.getPurgeableAttachments(cutoff).forEach { deleteAttachmentFiles(it) }
-        noteDao.purgeTrashedBefore(cutoff)
+        val attachments = database.withTransaction {
+            val files = noteDao.trashedVersionAttachments(cutoff) + noteDao.getPurgeableAttachments(cutoff)
+            noteDao.purgeTrashedBefore(cutoff)
+            files
+        }
+        deleteAttachmentFiles(attachments)
     }
 
     /** Removes the on-disk image files backing a note (comma-separated file names). */
-    private fun deleteAttachmentFiles(attachments: String) {
-        attachments.split(",")
-            .filter { it.isNotBlank() }
-            .forEach { AttachmentStore.delete(appContext, it) }
+    private suspend fun deleteAttachmentFiles(attachments: List<String>) {
+        com.example.data.attachments.AttachmentMaintenance(appContext, database)
+            .removeUnused(attachments.flatMap { it.split(",").filter(String::isNotBlank) })
     }
 
     // ---- Cloud sync helpers -----------------------------------------------------
@@ -135,7 +191,12 @@ class NoteRepository(
      * stays visible even when its book hasn't synced to this device. Re-encrypts with this device's
      * key, so it is safe even when other local notes are currently locked.
      */
-    suspend fun importFromSync(note: Note, validFolderIds: Set<String>): Unit = withContext(Dispatchers.IO) {
+    suspend fun importFromSync(note: Note, validFolderIds: Set<String>, expectedLocalStamp: Long?): Unit = withContext(Dispatchers.IO) {
+        database.withTransaction {
+        check(noteDao.getNoteById(note.id)?.updatedAt == expectedLocalStamp) { "The note changed while syncing; retry sync" }
+        noteDao.getNoteById(note.id)?.let { existing ->
+            if (existing.updatedAt != note.updatedAt) noteDao.insertVersion(NoteVersionEntity.from(existing))
+        }
         val entity = NoteEntity(
             id = note.id,
             encryptedTitle = EncryptionManager.encrypt(note.title),
@@ -153,6 +214,8 @@ class NoteRepository(
             attachments = note.attachments.joinToString(","),
         )
         noteDao.insertNote(entity)
+        noteDao.trimVersions(note.id)
+        }
     }
 
     private fun NoteEntity.toNote(): Note {

@@ -166,6 +166,12 @@
         Readable exports and ordinary share files are intentionally created when you request them.
       </p>
       <p>
+        Up to 20 recent saved versions of each note retain encrypted title/body content and attachment
+        references for recovery. Undo history is held in memory during editing. Receipt recognition
+        runs on-device; suggested amounts and dates are reviewed before saving, and no bank payment is made.
+        Content shared from another app is imported only after you choose Save or Append inside MyNotes+.
+      </p>
+      <p>
         <strong>On-device assistance</strong> uses Google ML Kit for OCR, smart suggestions and handwriting
         recognition, and Gemini Nano through AICore on supported devices for summaries. Recognition and
         inference process your content on-device; the app does not send that content to a cloud AI API.
@@ -185,9 +191,19 @@
         Because the key stays bound to your device and never leaves it, the encrypted note database and
         its attachments are <strong>excluded from Android’s automatic cloud backup and device‑to‑device
         transfer</strong>. This keeps your notes on the device that created them; it also means that
-        installing the app on a new device (or restoring a backup) starts with an empty library rather
+        installing the app on a new device (or using Android's system restore) starts with an empty library rather
         than notes that could no longer be unlocked. <strong>Updating the app on the same device keeps all
         your existing notes and unlocks them normally.</strong>
+      </p>
+      <p>
+        <strong>Encrypted local backups</strong> are separate from Android system backup. When requested,
+        MyNotes+ creates a passphrase-protected <code>.mynotesbackup</code> containing notes, books, media,
+        templates, reminders and recent versions. Records use AES-256-GCM; a PBKDF2-derived key protects
+        the archive. The temporary archive is encrypted, and the file is written only to your chosen
+        document destination, which may itself be cloud-backed. Restore stages media encrypted with this
+        device's key and adds fresh copies only after validation and confirmation. Existing security
+        settings and Drive credentials are not restored. Anyone with the backup and its passphrase can
+        read its contents. Limits include 32 MB per archive entry and 512 MB of total payload.
       </p>
     </div>
 
@@ -237,8 +253,9 @@
       </p>
       <p>
         <strong>Current sync limits:</strong> note content, custom templates and reminders sync. Image and
-        audio attachment binaries and book/folder structure do not yet sync. Use an encrypted share file
-        or an export with attachments when moving those files. Drive also receives account authorization
+        audio attachment binaries, recent note versions and book/folder structure do not yet sync. Use a
+        full encrypted backup when moving all your data. Conflicting note edits may produce an independent
+        conflict copy; this is not collaborative editing or a merged financial ledger. Drive also receives account authorization
         details and file metadata such as identifiers and modification times; these are not hidden by
         content encryption.
       </p>
@@ -284,6 +301,13 @@
         Notes, books and templates can be moved to Trash, restored, or permanently deleted. The default
         trash-retention period is 30 days and can be changed in the app; cleanup runs when the app runs.
         Reminders can be deleted from the Reminders screen. Local data otherwise remains until you remove it.
+      </p>
+      <p>
+        Permanent note deletion also removes its saved versions. Media still referenced by another note,
+        template or version is retained. Unreferenced files are eligible for cleanup after a 48-hour grace
+        period while the app runs. Cancelling a prepared restore removes its staged media; interrupted
+        preparation may leave encrypted files for later cleanup. Backup files in your chosen destination
+        are separate copies and must be deleted there, including any provider-held copies.
       </p>
       <ol>
         <li><strong>Remove local app data:</strong> open Settings &gt; Security &amp; Privacy &gt; Data controls,

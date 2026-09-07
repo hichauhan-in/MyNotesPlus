@@ -60,6 +60,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Alarm
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.Share
@@ -137,6 +138,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import com.example.domain.model.ReadableContent
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -397,8 +400,23 @@ fun HomeScreen(
     // Import: pick any file, then the passphrase dialog decrypts it into a new note.
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            importWrong = false
-            importUri = uri
+            scope.launch {
+                try {
+                    val textFile = withContext(Dispatchers.IO) { com.example.data.share.TextNoteImport.isText(context, uri) }
+                    if (textFile) {
+                        withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                            val imported = com.example.data.share.TextNoteImport.read(context, uri, viewModel.creationFolderId())
+                            viewModel.saveImportedNote(imported)
+                        }
+                        android.widget.Toast.makeText(context, "Note imported", android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        importWrong = false
+                        importUri = uri
+                    }
+                } catch (failure: Exception) {
+                    android.widget.Toast.makeText(context, failure.message ?: "Could not import this document", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
     fun startImport() {
@@ -484,6 +502,8 @@ fun HomeScreen(
                 noteCount = state.totalNotes,
                 query = query,
                 onQueryChange = viewModel::onQueryChanged,
+                searchType = state.searchType,
+                onSearchType = viewModel::setSearchType,
                 selectedFilter = selectedFilter,
                 onFilterSelect = viewModel::onFilterChanged,
                 filterScrollState = filterScrollState,
@@ -546,6 +566,7 @@ fun HomeScreen(
                         value = query,
                         onValueChange = viewModel::onQueryChanged,
                     )
+                    if (query.isNotBlank()) SearchTypeFilters(state.searchType, viewModel::setSearchType)
                     Spacer(Modifier.height(16.dp))
                 }
             }
@@ -652,6 +673,7 @@ fun HomeScreen(
                         selected = note.id in selectedIds,
                         selectionMode = selectionMode,
                         cloudConnected = syncEnabled,
+                        query = query,
                         onOpen = { onNoteClick(note.id) },
                         onToggleSelect = { viewModel.toggleSelection(note.id) },
                         onMore = { actionNote = note },
@@ -676,6 +698,7 @@ fun HomeScreen(
                         selected = note.id in selectedIds,
                         selectionMode = selectionMode,
                         cloudConnected = syncEnabled,
+                        query = query,
                         onOpen = { onNoteClick(note.id) },
                         onToggleSelect = { viewModel.toggleSelection(note.id) },
                         onMore = { actionNote = note },
@@ -1090,6 +1113,8 @@ private fun EmptyHomeContent(
     noteCount: Int,
     query: String,
     onQueryChange: (String) -> Unit,
+    searchType: com.example.domain.model.NoteType?,
+    onSearchType: (com.example.domain.model.NoteType?) -> Unit,
     selectedFilter: NoteFilter,
     onFilterSelect: (NoteFilter) -> Unit,
     filterScrollState: ScrollState,
@@ -1116,6 +1141,7 @@ private fun EmptyHomeContent(
         // tab is empty or full - never "compact" on an empty tab.
         Spacer(Modifier.height(32.dp))
         SearchField(value = query, onValueChange = onQueryChange)
+        if (query.isNotBlank()) SearchTypeFilters(searchType, onSearchType)
         Spacer(Modifier.height(30.dp))
         FilterChipsRow(selected = selectedFilter, onSelect = onFilterSelect, scrollState = filterScrollState)
         if (selectedFilter == NoteFilter.ALL && currentBook != null) {
@@ -1670,11 +1696,15 @@ private fun NoteCard(
     selected: Boolean,
     selectionMode: Boolean,
     cloudConnected: Boolean = false,
+    query: String = "",
     onOpen: () -> Unit,
     onToggleSelect: () -> Unit,
     onMore: () -> Unit,
 ) {
     val accent = if (note.colorArgb != 0) Color(note.colorArgb) else null
+    val preview = remember(note.content, note.type, query) {
+        if (query.isBlank()) note.preview else ReadableContent.snippet(ReadableContent.text(note.content, note.type.name), query)
+    }
     val context = LocalContext.current
     Box(modifier = Modifier.fillMaxWidth()) {
         NeuCard(
@@ -1725,9 +1755,9 @@ private fun NoteCard(
                         )
                         Spacer(Modifier.height(6.dp))
                     }
-                    if (note.preview.isNotBlank()) {
+                    if (preview.isNotBlank()) {
                         Text(
-                            text = note.preview,
+                            text = preview,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = if (note.title.isNotBlank()) 5 else 7,
@@ -1870,7 +1900,7 @@ private fun NoteCard(
 }
 
 @Composable
-private fun ExpandableFab(
+internal fun ExpandableFab(
     expanded: Boolean,
     onToggle: () -> Unit,
     onAction: (template: String?) -> Unit,
@@ -1881,6 +1911,7 @@ private fun ExpandableFab(
 ) {
     val neu = LocalNeuColors.current
     val rotation by animateFloatAsState(if (expanded) 45f else 0f, label = "fabRotation")
+    val menuHeight = (LocalConfiguration.current.screenHeightDp.dp - 180.dp).coerceAtLeast(48.dp)
 
     Column(
         modifier = modifier,
@@ -1891,23 +1922,22 @@ private fun ExpandableFab(
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
-            Column(horizontalAlignment = Alignment.End) {
+            Column(
+                modifier = Modifier.heightIn(max = menuHeight).verticalScroll(rememberScrollState()).padding(vertical = 8.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 FabAction("Import note", Icons.Rounded.Download, bordered = true, iconSlotSize = 62.dp) { onImport() }
-                Spacer(Modifier.height(3.dp))
                 FabAction("New book", Icons.Rounded.CreateNewFolder, bordered = true, iconSlotSize = 62.dp) { onCreateBook() }
-                Spacer(Modifier.height(3.dp))
                 FabAction("Reminder", Icons.Rounded.NotificationsActive, bordered = true, iconSlotSize = 62.dp) { onReminder() }
-                Spacer(Modifier.height(3.dp))
                 FabAction("Expenses", Icons.Rounded.AccountBalanceWallet, bordered = true, iconSlotSize = 62.dp) { onAction("expense") }
-                Spacer(Modifier.height(3.dp))
                 FabAction("Board", Icons.Rounded.Draw, bordered = true, iconSlotSize = 62.dp) { onAction("scribble") }
-                Spacer(Modifier.height(3.dp))
                 FabAction("Checklist", Icons.Rounded.Checklist, bordered = true, iconSlotSize = 62.dp) { onAction("checklist") }
-                Spacer(Modifier.height(3.dp))
                 FabAction("New note", Icons.Rounded.EditNote, bordered = true, iconSlotSize = 62.dp) { onAction(null) }
-                Spacer(Modifier.height(12.dp))
             }
         }
+
+        if (expanded) Spacer(Modifier.height(16.dp))
 
         Box(
             modifier = Modifier
@@ -2006,7 +2036,7 @@ private fun FabAction(
     }
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.clickable(
+        modifier = Modifier.heightIn(min = 48.dp).clickable(
             interactionSource = remember { MutableInteractionSource() },
             indication = null,
             onClick = onClick,
@@ -2037,6 +2067,7 @@ private fun TemplatesFab(
     onManage: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val menuHeight = (LocalConfiguration.current.screenHeightDp.dp - 170.dp).coerceAtLeast(48.dp)
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.Start,
@@ -2046,7 +2077,10 @@ private fun TemplatesFab(
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
-            Column(horizontalAlignment = Alignment.Start) {
+            Column(
+                modifier = Modifier.heightIn(max = menuHeight).verticalScroll(rememberScrollState()).padding(vertical = 8.dp),
+                horizontalAlignment = Alignment.Start,
+            ) {
                 templates.forEach { template ->
                     FabAction(
                         template.name,
@@ -2104,6 +2138,7 @@ private fun NoteActionsSheet(
     viewModel: HomeViewModel,
 ) {
     val sheetState = rememberModalBottomSheetState()
+    val context = LocalContext.current
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -2146,6 +2181,10 @@ private fun NoteActionsSheet(
                     if (note.isArchived) "Unarchive" else "Archive",
                 ) { viewModel.toggleArchive(note); onDismiss() }
                 SheetAction(Icons.Rounded.Folder, "Move to book") { onMove() }
+                SheetAction(Icons.Rounded.ContentCopy, "Duplicate note") {
+                    viewModel.duplicateNote(note) { message -> android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show() }
+                    onDismiss()
+                }
                 SheetAction(Icons.Rounded.Share, "Share") { onShare() }
                 SheetAction(Icons.Rounded.Delete, "Move to Trash", destructive = true) {
                     viewModel.moveToTrash(note); onDismiss()

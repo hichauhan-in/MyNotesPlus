@@ -16,6 +16,8 @@ import com.example.di.AppContainer
 import com.example.domain.model.CustomTemplate
 import com.example.domain.model.Folder
 import com.example.domain.model.Note
+import com.example.domain.model.NoteType
+import com.example.domain.model.ReadableContent
 import com.example.data.sync.SyncCoordinator
 import com.example.data.sync.SyncStatus
 import kotlinx.coroutines.Dispatchers
@@ -65,6 +67,7 @@ data class HomeUiState(
     val breadcrumb: List<Folder> = emptyList(),
     val totalNotes: Int = 0,
     val loading: Boolean = true,
+    val searchType: NoteType? = null,
 ) {
     val currentBook: Folder? get() = breadcrumb.lastOrNull()
     val isEmpty: Boolean get() = pinned.isEmpty() && notes.isEmpty() && books.isEmpty()
@@ -177,6 +180,8 @@ class HomeViewModel : ViewModel() {
     }
 
     private val _query = MutableStateFlow("")
+    private val _searchType = MutableStateFlow<NoteType?>(null)
+    fun setSearchType(type: NoteType?) { _searchType.value = type }
     val query: StateFlow<String> = _query.asStateFlow()
 
     private val _filter = MutableStateFlow(NoteFilter.ALL)
@@ -192,13 +197,18 @@ class HomeViewModel : ViewModel() {
 
     val uiState: StateFlow<HomeUiState> =
         combine(
-            allNotesSnapshot,
+            allNotesSnapshot.map { notes -> notes to notes.associate { it.id to ReadableContent.text(it.content, it.type.name) } }.flowOn(Dispatchers.Default),
             allFolders,
             _query,
             _filter,
             _currentFolderId,
-        ) { notes, folderList, query, filter, currentFolderId ->
-            buildState(notes, folderList, query, filter, currentFolderId)
+        ) { indexed, folderList, query, filter, currentFolderId ->
+            buildState(indexed.first, folderList, query, filter, currentFolderId, indexed.second)
+        }.combine(_searchType) { state, type ->
+            state.copy(searchType = type,
+                pinned = state.pinned.filter { type == null || it.type == type },
+                notes = state.notes.filter { type == null || it.type == type },
+                books = if (type == null) state.books else emptyList())
         }.flowOn(Dispatchers.Default)
             .stateIn(
                 scope = viewModelScope,
@@ -212,6 +222,7 @@ class HomeViewModel : ViewModel() {
         query: String,
         filter: NoteFilter,
         currentFolderId: String?,
+        searchable: Map<String, String>,
     ): HomeUiState {
         val trashedFolderIds = folderList.filter { it.isTrashed }.mapTo(HashSet()) { it.id }
         // A trashed item's "trash parent" is its parent only if that parent is also trashed;
@@ -238,9 +249,7 @@ class HomeViewModel : ViewModel() {
         }
 
         val searched = if (query.isBlank()) visible else visible.filter { note ->
-            note.title.contains(query, ignoreCase = true) ||
-                note.content.contains(query, ignoreCase = true) ||
-                note.tags.any { it.contains(query, ignoreCase = true) }
+            ReadableContent.matches(listOf(note.title, searchable[note.id].orEmpty(), note.tags.joinToString(" ")).joinToString("\n"), query)
         }
 
         val showPinnedSection = filter == NoteFilter.ALL && query.isBlank()
@@ -262,6 +271,9 @@ class HomeViewModel : ViewModel() {
                     subBookCount = folderList.count { it.isTrashed == inTrash && it.parentId == folder.id },
                 )
             }
+        } else if (query.isNotBlank() && (filter == NoteFilter.ALL || filter == NoteFilter.TRASH)) {
+            folderList.filter { it.isTrashed == (filter == NoteFilter.TRASH) && ReadableContent.matches(it.name, query) }
+                .map { folder -> BookItem(folder, all.count { it.folderId == folder.id && it.isTrashed == folder.isTrashed }, folderList.count { it.parentId == folder.id }) }
         } else {
             emptyList()
         }
@@ -304,7 +316,15 @@ class HomeViewModel : ViewModel() {
         return path.toList()
     }
 
-    fun onQueryChanged(value: String) { _query.value = value }
+    fun onQueryChanged(value: String) {
+        _query.value = value.take(256)
+        if (value.isBlank()) _searchType.value = null
+    }
+
+    fun duplicateNote(note: Note, onResult: (String) -> Unit) = viewModelScope.launch {
+        try { repository.duplicate(note); onResult("Copy saved") }
+        catch (failure: Exception) { onResult(failure.message ?: "Could not copy this note") }
+    }
 
     fun onFilterChanged(value: NoteFilter) {
         _filter.value = value
@@ -327,6 +347,8 @@ class HomeViewModel : ViewModel() {
 
     // ---- Book navigation ----
     fun openBook(folderId: String) {
+        _query.value = ""
+        _searchType.value = null
         // Stay in whichever list we're browsing (All or Trash); just descend into the book.
         _currentFolderId.value = folderId
         clearSelection()

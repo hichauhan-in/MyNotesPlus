@@ -54,6 +54,7 @@ class VaultNotesApp : Application(), ImageLoaderFactory {
     private fun encryptExistingAttachments() {
         AppContainer.applicationScope.launch(Dispatchers.IO) {
             AttachmentStore.migrateExistingToEncrypted(applicationContext)
+            runCatching { com.example.data.attachments.AttachmentMaintenance(applicationContext, AppContainer.localDatabase).removeAbandoned() }
         }
     }
 }

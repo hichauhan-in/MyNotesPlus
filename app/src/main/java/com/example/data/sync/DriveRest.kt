@@ -12,6 +12,7 @@ import java.util.concurrent.TimeUnit
 
 /** Metadata for a note blob stored in the visible "MyNotes" sync folder. */
 data class RemoteNoteMeta(val fileId: String, val noteId: String, val updatedAt: Long)
+data class RemoteNoteDownload(val content: String, val etag: String)
 
 /**
  * Thin Google Drive v3 REST client used by cloud sync. It only ever sends already-encrypted bytes,
@@ -154,6 +155,22 @@ object DriveRest {
         return exec(req)
     }
 
+    fun downloadNote(accessToken: String, fileId: String): RemoteNoteDownload? = runCatching {
+        val request = Request.Builder().url("https://www.googleapis.com/drive/v3/files/$fileId?alt=media")
+            .header("Authorization", "Bearer $accessToken").get().build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) return null
+            val body = response.body ?: return null
+            if (body.contentLength() > 48L * 1024 * 1024) return null
+            val bytes = body.byteStream().use { com.example.data.share.ShareImportPolicy.readBounded(it, 48 * 1024 * 1024) }
+            RemoteNoteDownload(String(bytes, Charsets.UTF_8), response.header("ETag") ?: return null)
+        }
+    }.getOrNull()
+
+    fun updateCollection(accessToken: String, fileId: String, content: String, etag: String): Boolean =
+        uploadMultipart(accessToken, "https://www.googleapis.com/upload/drive/v3/files/$fileId?uploadType=multipart&fields=id",
+            patch = true, metadata = JSONObject(), content = content, etag = etag) != null
+
     /** Lists every non-trashed note blob in the visible [folderId], or null if the listing fails. */
     fun listFolderNotes(accessToken: String, folderId: String): List<RemoteNoteMeta>? {
         val out = ArrayList<RemoteNoteMeta>()
@@ -196,6 +213,7 @@ object DriveRest {
         content: String,
         updatedAt: Long,
         existingId: String?,
+        etag: String? = null,
     ): String? {
         val props = JSONObject().put("noteId", noteId).put("updatedAt", updatedAt.toString())
         return if (existingId == null) {
@@ -213,17 +231,18 @@ object DriveRest {
             uploadMultipart(
                 accessToken,
                 "https://www.googleapis.com/upload/drive/v3/files/$existingId?uploadType=multipart&fields=id",
-                patch = true, metadata = meta, content = content,
+                patch = true, metadata = meta, content = content, etag = etag,
             )
         }
     }
 
     /** Permanently deletes a Drive file (used when a note was deleted on another device). */
-    fun deleteFile(accessToken: String, fileId: String): Boolean = try {
+    fun deleteFile(accessToken: String, fileId: String, etag: String? = null): Boolean = try {
         client.newCall(
             Request.Builder()
                 .url("https://www.googleapis.com/drive/v3/files/$fileId")
                 .header("Authorization", "Bearer $accessToken")
+                .apply { if (etag != null) header("If-Match", etag) }
                 .delete()
                 .build(),
         ).execute().use { it.isSuccessful }
@@ -237,6 +256,7 @@ object DriveRest {
         patch: Boolean,
         metadata: JSONObject,
         content: String,
+        etag: String? = null,
     ): String? {
         val multipart = MultipartBody.Builder()
             .setType("multipart/related".toMediaType())
@@ -244,6 +264,7 @@ object DriveRest {
             .addPart(content.toRequestBody(textMedia))
             .build()
         val builder = Request.Builder().url(url).header("Authorization", "Bearer $accessToken")
+        if (etag != null) builder.header("If-Match", etag)
         val request = (if (patch) builder.patch(multipart) else builder.post(multipart)).build()
         return exec(request)?.let { runCatching { JSONObject(it).optString("id").ifBlank { null } }.getOrNull() }
     }

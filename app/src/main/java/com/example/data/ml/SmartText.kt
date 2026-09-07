@@ -40,16 +40,19 @@ object SmartText {
 
     /** Analyses [text] and returns the actionable suggestions found (empty on failure / offline). */
     suspend fun analyze(context: Context, text: String): List<SmartSuggestion> {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O) return emptyList()
         if (text.isBlank() || text.length < 4) return emptyList()
-        val extractor = EntityExtraction.getClient(
-            EntityExtractorOptions.Builder(EntityExtractorOptions.ENGLISH).build(),
-        )
+        val extractor = runCatching {
+            EntityExtraction.getClient(EntityExtractorOptions.Builder(EntityExtractorOptions.ENGLISH).build())
+        }.getOrNull() ?: return emptyList()
         return try {
             awaitTask(extractor.downloadModelIfNeeded())
             val annotations = awaitTask(
                 extractor.annotate(EntityExtractionParams.Builder(text).build()),
             )
             buildSuggestions(annotations)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             emptyList()
         } finally {

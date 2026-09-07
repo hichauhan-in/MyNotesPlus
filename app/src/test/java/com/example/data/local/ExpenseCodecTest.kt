@@ -1,6 +1,7 @@
 package com.example.data.local
 
 import com.example.domain.model.ExpenseKind
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -71,7 +72,16 @@ class ExpenseCodecTest {
 
     @Test fun corruptedAndFutureContentIsNotSilentlyReplacedWithAnEmptyTracker() {
         assertThrows(Exception::class.java) { ExpenseCodec.decode("broken JSON") }
-        assertThrows(IllegalArgumentException::class.java) { ExpenseCodec.decode("""{"version":5,"accounts":[]}""") }
+        assertThrows(IllegalArgumentException::class.java) { ExpenseCodec.decode("""{"version":6,"accounts":[]}""") }
         assertThrows(IllegalArgumentException::class.java) { ExpenseCodec.decode("""{"version":2,"accounts":[{"id":"same"},{"id":"same"}]}""") }
+    }
+
+    @Test fun versionFourBalancesAndHistorySurviveReusableActionMigration() {
+        val posted = ExpenseCodec.decode(legacy).complete("hdfc", "bills", "rent", now = 100)
+        val previous = JSONObject(ExpenseCodec.encode(posted)).put("version", 4).toString()
+        val migrated = ExpenseCodec.decode(previous)
+        assertEquals(posted, migrated)
+        assertEquals(5, JSONObject(ExpenseCodec.encode(migrated)).getInt("version"))
+        assertEquals(42_500_25L, migrated.complete("hdfc", "bills", "rent", now = 200).accounts.first().balance)
     }
 }

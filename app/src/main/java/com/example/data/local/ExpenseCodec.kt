@@ -12,7 +12,7 @@ import org.json.JSONObject
 import java.util.UUID
 
 internal object ExpenseCodec {
-    const val VERSION = 4
+    const val VERSION = 5
 
     fun decode(content: String): ExpenseModel {
         if (content.isBlank()) return ExpenseModel()
@@ -21,7 +21,7 @@ internal object ExpenseCodec {
         require(version in 1..VERSION) { "This tracker needs a newer app version" }
         val model = if (version >= 2) {
             val accounts = root.getJSONArray("accounts").objects().map { account ->
-                val balance = if (version >= VERSION) account.getLong("balanceMinor") else ExpenseMoney.add(
+                val balance = if (version >= 4) account.getLong("balanceMinor") else ExpenseMoney.add(
                     account.decimal("balance"), account.decimal("credit"),
                 )
                 ExpAccount(
@@ -32,19 +32,20 @@ internal object ExpenseCodec {
                         ExpSection(
                             id = section.identifier(), name = section.optString("name"),
                             iconKey = section.optString("icon", "other"),
-                            kind = if (version >= VERSION) ExpenseKind.valueOf(section.getString("kind")) else legacyKind(section),
+                            kind = if (version >= 4) ExpenseKind.valueOf(section.getString("kind")) else legacyKind(section),
                             items = section.optJSONArray("items").objects().map { item ->
                                 ExpItem(
                                     id = item.identifier(), name = item.optString("name"),
-                                    amount = if (version >= VERSION) item.getLong("amountMinor") else item.decimal("amount"),
+                                    amount = if (version >= 4) item.getLong("amountMinor") else item.decimal("amount"),
                                     toAccountId = item.nullableString("to"), completedAt = item.nullableLong("completedAt"),
+                                    receiptToken = item.nullableString("receipt"), receiptDate = item.nullableString("receiptDate"),
                                 )
                             },
                         )
                     },
                 )
             }
-            if (version >= VERSION) ExpenseModel(accounts, root.optJSONArray("history").objects().map(::readTransaction))
+            if (version >= 4) ExpenseModel(accounts, root.optJSONArray("history").objects().map(::readTransaction))
             else migrateTransfers(accounts, root.optJSONArray("transfers"))
         } else migrateOriginal(root)
         validate(model)
@@ -61,6 +62,7 @@ internal object ExpenseCodec {
                         .put("kind", section.kind.name).put("items", JSONArray(section.items.map { item ->
                             JSONObject().put("id", item.id).put("name", item.name).put("amountMinor", item.amount)
                                 .put("to", item.toAccountId).put("completedAt", item.completedAt)
+                                .put("receipt", item.receiptToken).put("receiptDate", item.receiptDate)
                         }))
                 }))
         }
@@ -140,6 +142,7 @@ internal object ExpenseCodec {
         toBalanceAfter = record.nullableLong("toBalanceAfter"), sectionId = record.nullableString("sectionId"),
         itemId = record.nullableString("itemId"), completedAt = record.getLong("completedAt"),
         reversedAt = record.nullableLong("reversedAt"), reversalOf = record.nullableString("reversalOf"),
+        receiptToken = record.nullableString("receipt"), receiptDate = record.nullableString("receiptDate"),
     )
 
     private fun writeTransaction(record: ExpTransaction) = JSONObject()
@@ -149,6 +152,7 @@ internal object ExpenseCodec {
         .put("toAccountId", record.toAccountId).put("toAccountName", record.toAccountName).put("toBalanceAfter", record.toBalanceAfter)
         .put("sectionId", record.sectionId).put("itemId", record.itemId).put("completedAt", record.completedAt)
         .put("reversedAt", record.reversedAt).put("reversalOf", record.reversalOf)
+        .put("receipt", record.receiptToken).put("receiptDate", record.receiptDate)
 
     private fun validate(model: ExpenseModel) {
         fun unique(ids: List<String>) {

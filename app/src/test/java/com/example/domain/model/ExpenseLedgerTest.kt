@@ -38,11 +38,45 @@ class ExpenseLedgerTest {
         assertEquals("SBI", completed.history.single().toAccountName)
     }
 
-    @Test fun doubleCompletionCannotSpendTwice() {
-        val completed = tracker(ExpenseKind.EXPENSE).complete("hdfc", "section", "item")
-        assertThrows(IllegalArgumentException::class.java) { completed.complete("hdfc", "section", "item") }
-        assertEquals(40_000_00L, completed.accounts.first().balance)
-        assertEquals(1, completed.history.size)
+    @Test fun savedActionCanRunAgainWithoutDuplicatingItsDefinition() {
+        val first = tracker(ExpenseKind.SAVINGS).complete("hdfc", "section", "item", now = 100)
+        val second = first.complete("hdfc", "section", "item", now = 200)
+        assertEquals(30_000_00L, second.accounts.first().balance)
+        assertEquals(1, second.accounts.first().sections.single().items.size)
+        assertEquals(200L, second.accounts.first().sections.single().items.single().completedAt)
+        assertEquals(2, second.history.size)
+        assertEquals(2, second.history.map { it.id }.distinct().size)
+        assertEquals(10_000_00L, second.accounts.first().configuredOutflow())
+    }
+
+    @Test fun changingSavedAmountDoesNotRewritePreviousExecutions() {
+        val first = tracker(ExpenseKind.CREDIT).complete("hdfc", "section", "item", now = 100)
+        val account = first.accounts.first()
+        val section = account.sections.single()
+        val edited = first.copy(accounts = listOf(account.copy(sections = listOf(section.copy(
+            items = listOf(section.items.single().copy(amount = 25_000_00)),
+        )))) + first.accounts.drop(1))
+        val next = edited.complete("hdfc", "section", "item", now = 200)
+        assertEquals(85_000_00L, next.accounts.first().balance)
+        assertEquals(listOf(10_000_00L, 25_000_00L), next.history.map { it.amount })
+    }
+
+    @Test fun repeatedTransferChecksTheCurrentBalanceEveryTime() {
+        val first = tracker(ExpenseKind.TRANSFER, 30_000_00).complete("hdfc", "section", "item")
+        assertThrows(IllegalArgumentException::class.java) { first.complete("hdfc", "section", "item") }
+        assertEquals(20_000_00L, first.accounts.first().balance)
+        assertEquals(50_000_00L, first.accounts.last().balance)
+        assertEquals(1, first.history.size)
+    }
+
+    @Test fun reversingOlderExecutionKeepsTheLatestUseAndOtherBalances() {
+        val first = tracker(ExpenseKind.TRANSFER).complete("hdfc", "section", "item", now = 100)
+        val second = first.complete("hdfc", "section", "item", now = 200)
+        val reversed = second.reverse(first.history.single().id, now = 300)
+        assertEquals(40_000_00L, reversed.accounts.first().balance)
+        assertEquals(30_000_00L, reversed.accounts.last().balance)
+        assertEquals(200L, reversed.accounts.first().sections.single().items.single().completedAt)
+        assertEquals(3, reversed.history.size)
     }
 
     @Test fun insufficientFundsLeaveBothAccountsUnchanged() {

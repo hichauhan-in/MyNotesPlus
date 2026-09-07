@@ -116,6 +116,9 @@ import androidx.compose.material.icons.rounded.StrikethroughS
 import androidx.compose.material.icons.rounded.TableChart
 import androidx.compose.material.icons.rounded.Title
 import androidx.compose.material.icons.rounded.Undo
+import androidx.compose.material.icons.rounded.Redo
+import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
@@ -256,6 +259,12 @@ fun EditorScreen(
 ) {
     LaunchedEffect(Unit) { viewModel.load(noteId, template, folderId, templateId) }
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val editorLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    androidx.compose.runtime.DisposableEffect(viewModel, editorLifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event -> if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) viewModel.flush() }
+        editorLifecycle.addObserver(observer)
+        onDispose { editorLifecycle.removeObserver(observer); viewModel.flush() }
+    }
     val defaultExportFolder by viewModel.defaultExportFolder.collectAsStateWithLifecycle()
     val driveConnected by viewModel.driveConnected.collectAsStateWithLifecycle()
     val pageInkTextMode by viewModel.pageInkTextMode.collectAsStateWithLifecycle()
@@ -267,7 +276,7 @@ fun EditorScreen(
     var editing by remember { mutableStateOf(noteId == null) }
     LaunchedEffect(state.id) {
         if (noteId != null && state.id == noteId && !state.templateMode) {
-            editing = state.startInEditMode
+            editing = state.startInEditMode || state.type == NoteType.EXPENSE
         }
     }
     var showColorSheet by remember { mutableStateOf(false) }
@@ -279,6 +288,8 @@ fun EditorScreen(
     var showShareSheet by remember { mutableStateOf(false) }
     var showSharePassphrase by remember { mutableStateOf(false) }
     var showReminderSheet by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
+    var showFind by remember { mutableStateOf(false) }
     // Optional prefill when the reminder sheet is opened from a detected date/time smart chip.
     var reminderPrefillTime by remember { mutableStateOf<Long?>(null) }
     var reminderPrefillBody by remember { mutableStateOf("") }
@@ -287,6 +298,8 @@ fun EditorScreen(
     // Whether on-device GenAI summarization (Gemini Nano) is available on this device.
     var aiSummaryAvailable by remember { mutableStateOf(false) }
     val reminderVm: ReminderViewModel = viewModel()
+    val reminderBusy by reminderVm.busy.collectAsStateWithLifecycle()
+    val reminderError by reminderVm.error.collectAsStateWithLifecycle()
     val notifPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { /* A denied notification permission just suppresses the reminder banner silently. */ }
@@ -449,7 +462,6 @@ fun EditorScreen(
             val old = blocks[idx] as ImageBlock
             if (old.fileName != newFileName) {
                 blocks[idx] = old.copy(fileName = newFileName)
-                AttachmentStore.delete(context, old.fileName)
                 pushBlocks(immediate = true)
             }
         }
@@ -540,7 +552,6 @@ fun EditorScreen(
             blocks[idx - 1] = TextBlock(a.id, TextFieldValue(merged, TextRange(a.value.text.length)))
             blocks.removeAt(idx)
         }
-        fileName?.let { AttachmentStore.delete(context, it) }
         pushBlocks(immediate = true)
     }
 
@@ -615,8 +626,11 @@ fun EditorScreen(
         if (success && file != null) {
             // The camera writes plaintext into our file; encrypt it at rest before showing it.
             scope.launch {
-                withContext(Dispatchers.IO) { AttachmentStore.encryptFileInPlace(context, file.name) }
-                insertImageAtCursor(file.name)
+                val encrypted = withContext(Dispatchers.IO) { AttachmentStore.encryptFileInPlace(context, file.name) }
+                if (encrypted) insertImageAtCursor(file.name) else {
+                    AttachmentStore.delete(context, file.name)
+                    android.widget.Toast.makeText(context, "Could not encrypt the photo", android.widget.Toast.LENGTH_LONG).show()
+                }
             }
         } else {
             file?.delete()
@@ -797,7 +811,7 @@ fun EditorScreen(
     // enough to notice, so ordinary notes open instantly with no flicker.
     var bodyReady by remember(state.id) { mutableStateOf(false) }
     var showBodyLoader by remember(state.id) { mutableStateOf(false) }
-    LaunchedEffect(state.id) {
+    LaunchedEffect(state.id, state.bodyGeneration) {
         launch {
             delay(140)
             if (!bodyReady) showBodyLoader = true
@@ -929,6 +943,23 @@ fun EditorScreen(
                 viewModel.deleteToTrash { onNavigateBack() }
             },
         )
+
+        if (!state.templateMode && (editing || noteId != null)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End) {
+                androidx.compose.material3.IconButton(onClick = { showFind = true }) { Icon(Icons.Rounded.Search, "Find in note") }
+                if (editing && state.type != NoteType.EXPENSE) {
+                    androidx.compose.material3.IconButton(onClick = viewModel::undo, enabled = state.canUndo) {
+                        Icon(Icons.Rounded.Undo, "Undo edit")
+                    }
+                    androidx.compose.material3.IconButton(onClick = viewModel::redo, enabled = state.canRedo) {
+                        Icon(Icons.Rounded.Redo, "Redo edit")
+                    }
+                }
+                if (noteId != null) androidx.compose.material3.IconButton(onClick = { viewModel.loadVersions(); showHistory = true }) {
+                    Icon(Icons.Rounded.History, "Recent versions")
+                }
+            }
+        }
 
         CompositionLocalProvider(LocalReadOnly provides !editing) {
         val metaBar: @Composable () -> Unit = {
@@ -1112,13 +1143,14 @@ fun EditorScreen(
                     onTitleChange = viewModel::onTitleChanged,
                     onContentChange = viewModel::onContentChanged,
                     onCommitContent = viewModel::commitContentNow,
+                    saving = state.saveStatus == SaveStatus.Saving || state.saveStatus == SaveStatus.Error,
                     meta = metaBar,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
 
             NoteType.SCRIBBLE -> ScribbleEditor(
-                seedKey = state.id,
+                seedKey = "${state.id}:${state.bodyGeneration}",
                 title = state.title,
                 content = state.content,
                 onTitleChange = viewModel::onTitleChanged,
@@ -1141,6 +1173,12 @@ fun EditorScreen(
                 items(checklistItems, key = { it.id }) { item ->
                     ChecklistRow(
                         item = item,
+                        onMove = { offset ->
+                            val moved = ChecklistUtil.move(checklistItems.toList(), checklistItems.indexOfFirst { it.id == item.id }, offset)
+                            checklistItems.clear()
+                            checklistItems.addAll(moved)
+                            pushChecklist()
+                        },
                         requestFocus = item.id == pendingChecklistFocusId,
                         onFocusHandled = { if (pendingChecklistFocusId == item.id) pendingChecklistFocusId = null },
                         onToggle = {
@@ -1346,6 +1384,9 @@ fun EditorScreen(
         }
     }
 
+    if (showHistory) NoteHistorySheet(viewModel, onDismiss = { showHistory = false })
+    if (showFind) FindInNote(state.content, state.type.name, onDismiss = { showFind = false })
+
     if (showColorSheet) {
         ColorPickerSheet(
             selected = state.colorArgb,
@@ -1392,17 +1433,19 @@ fun EditorScreen(
             prefillBody = reminderPrefillBody,
             prefillNoteId = state.id,
             prefillTriggerAt = reminderPrefillTime,
+            checklistOptions = if (state.type == NoteType.CHECKLIST) checklistItems.filter { !it.checked && it.text.isNotBlank() }.map { it.text } else emptyList(),
+            busy = reminderBusy,
+            error = reminderError,
             onSave = { reminder ->
-                showReminderSheet = false
-                reminderPrefillTime = null
-                reminderPrefillBody = ""
-                // Persist the note first so the reminder's link resolves when tapped.
-                viewModel.flush()
-                reminderVm.save(context, reminder)
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                    notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                viewModel.saveBeforeLeaving {
+                    reminderVm.save(context, reminder) {
+                        showReminderSheet = false
+                        reminderPrefillTime = null
+                        reminderPrefillBody = ""
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        android.widget.Toast.makeText(context, "Reminder set", android.widget.Toast.LENGTH_SHORT).show()
+                    }
                 }
-                android.widget.Toast.makeText(context, "Reminder set", android.widget.Toast.LENGTH_SHORT).show()
             },
             onDelete = null,
             onDismiss = {
@@ -1452,8 +1495,11 @@ fun EditorScreen(
                 // Encrypt the freshly-recorded file at rest before it's inserted. Runs on the
                 // editor's scope (not the sheet's) so it can't be cancelled by the sheet closing.
                 scope.launch {
-                    withContext(Dispatchers.IO) { AttachmentStore.encryptFileInPlace(context, fileName) }
-                    insertAudioAtCursor(fileName)
+                    val encrypted = withContext(Dispatchers.IO) { AttachmentStore.encryptFileInPlace(context, fileName) }
+                    if (encrypted) insertAudioAtCursor(fileName) else {
+                        AttachmentStore.delete(context, fileName)
+                        android.widget.Toast.makeText(context, "Could not encrypt the recording", android.widget.Toast.LENGTH_LONG).show()
+                    }
                 }
             },
             onCancel = { showVoiceRecorder = false },
@@ -3118,6 +3164,7 @@ private fun ChecklistRow(
     onToggle: () -> Unit,
     onTextChange: (String) -> Unit,
     onDelete: () -> Unit,
+    onMove: ((Int) -> Unit)? = null,
     requestFocus: Boolean = false,
     onFocusHandled: () -> Unit = {},
     onImeNext: (() -> Unit)? = null,
@@ -3196,19 +3243,9 @@ private fun ChecklistRow(
                 inner()
             },
         )
-        Box(
-            modifier = Modifier
-                .size(30.dp)
-                .clip(CircleShape)
-                .clickable(enabled = !readOnly, onClick = onDelete),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.Close,
-                contentDescription = "Remove item",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
+        if (!readOnly) {
+            if (onMove != null) ChecklistReorderHandle(onMove, onDelete)
+            else androidx.compose.material3.IconButton(onClick = onDelete) { Icon(Icons.Rounded.Close, "Remove item") }
         }
     }
 }
@@ -3235,6 +3272,7 @@ private fun ChecklistBlockView(
             key(item.id) {
                 ChecklistRow(
                     item = UiChecklistItem(item.id, item.text, item.checked),
+                    onMove = { offset -> onChange(ChecklistUtil.move(block.items, block.items.indexOfFirst { it.id == item.id }, offset)) },
                     requestFocus = item.id == pendingFocusId,
                     onFocusHandled = { if (pendingFocusId == item.id) pendingFocusId = null },
                     onToggle = {

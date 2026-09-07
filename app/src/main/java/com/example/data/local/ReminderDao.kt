@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ReminderDao {
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertRestoredReminders(reminders: List<ReminderEntity>)
+
     @Query("SELECT * FROM reminders ORDER BY triggerAt ASC")
     fun getAll(): Flow<List<ReminderEntity>>
 

@@ -38,8 +38,8 @@ private class RemindersRemoteViewsFactory(
             if (hideContent) reminders.map { it.copy(title = "Private reminder", body = "") } else reminders
         }
         items = all
-            .filter { it.repeat != ReminderRepeat.NONE || it.triggerAt >= now }
-            .sortedBy { it.triggerAt }
+            .filter { !it.isCompleted }
+            .sortedBy { it.effectiveAt }
             .take(25)
     }
 
@@ -54,7 +54,7 @@ private class RemindersRemoteViewsFactory(
         val reminder = items.getOrNull(position) ?: return views
         views.setTextViewText(R.id.item_title, reminder.title.ifBlank { "Reminder" })
         val repeatSuffix = if (reminder.repeat != ReminderRepeat.NONE) " · ${reminder.repeat.label}" else ""
-        views.setTextViewText(R.id.item_time, timeFormat.format(reminder.triggerAt) + repeatSuffix)
+        views.setTextViewText(R.id.item_time, timeFormat.format(reminder.effectiveAt) + repeatSuffix)
         val fillIn = Intent().apply {
             if (reminder.noteId != null) putExtra(MainActivity.EXTRA_OPEN_NOTE_ID, reminder.noteId)
             else putExtra(MainActivity.EXTRA_OPEN_REMINDERS, true)

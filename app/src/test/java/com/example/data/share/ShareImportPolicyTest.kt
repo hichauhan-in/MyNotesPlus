@@ -10,6 +10,22 @@ import org.junit.Test
 import java.io.ByteArrayInputStream
 
 class ShareImportPolicyTest {
+    @Test fun escapedJsonAttachmentUrisAreRemappedStructurally() {
+        val content = """{"version":5,"accounts":[],"history":[{"receipt":"![img](attachment:\/\/receipt.jpg)"}]}"""
+        assertEquals(listOf("receipt.jpg"), com.example.domain.model.AttachmentMarkup.fileNames(content))
+        val rewritten = ShareImportPolicy.renameContent(content, false, mapOf("receipt.jpg" to "copy.jpg"))
+        assertEquals("![img](attachment://copy.jpg)", org.json.JSONObject(rewritten).getJSONArray("history").getJSONObject(0).getString("receipt"))
+        assertEquals(listOf("copy.jpg"), com.example.domain.model.AttachmentMarkup.fileNames(rewritten))
+    }
+
+    @Test fun emptyBoardAndBoardImagesWithoutLegacyTokensRemainImportable() {
+        assertEquals("", ShareImportPolicy.renameContent("", true, emptyMap()))
+        val board = """{"im":[{"a":"receipt.jpg"}]}"""
+        assertEquals(listOf("receipt.jpg"), com.example.domain.model.AttachmentMarkup.fileNames(board))
+        val rewritten = ShareImportPolicy.renameContent(board, true, mapOf("receipt.jpg" to "copy.jpg"))
+        assertEquals("copy.jpg", org.json.JSONObject(rewritten).getJSONArray("im").getJSONObject(0).getString("a"))
+    }
+
     @Test fun importsCannotReuseOrEscapeExistingAttachmentPaths() {
         assertNotEquals("photo.jpg", ShareImportPolicy.freshName("photo.jpg"))
         assertNotEquals(ShareImportPolicy.freshName("photo.jpg"), ShareImportPolicy.freshName("photo.jpg"))

@@ -7,6 +7,8 @@ import com.example.domain.model.AttachmentMarkup
 import com.example.domain.model.CustomTemplate
 import com.example.domain.model.Note
 import com.example.domain.model.NoteType
+import com.example.domain.model.EditHistory
+import com.example.data.local.NoteVersionEntity
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +51,9 @@ data class EditorUiState(
     val iconKey: String = "note",
     /** For existing notes: whether to open straight into edit mode (user preference). */
     val startInEditMode: Boolean = false,
+    val bodyGeneration: Long = 0,
+    val canUndo: Boolean = false,
+    val canRedo: Boolean = false,
 ) {
     val wordCount: Int
         get() = AttachmentMarkup.stripTokens(content).trim()
@@ -75,6 +80,43 @@ class EditorViewModel : ViewModel() {
 
     private val _state = MutableStateFlow(EditorUiState())
     val state: StateFlow<EditorUiState> = _state.asStateFlow()
+    private val history = EditHistory<EditorUiState>()
+    private val _versions = MutableStateFlow<List<NoteVersionEntity>>(emptyList())
+    val versions = _versions.asStateFlow()
+
+    private fun rememberEdit(group: String? = null) {
+        if (_state.value.type != NoteType.EXPENSE) history.record(_state.value, group)
+        _state.value = _state.value.copy(canUndo = history.canUndo, canRedo = history.canRedo)
+    }
+
+    fun undo() { history.undo(_state.value)?.let(::applyHistory) }
+    fun redo() { history.redo(_state.value)?.let(::applyHistory) }
+
+    private fun applyHistory(snapshot: EditorUiState) {
+        dirty = true
+        _state.value = snapshot.copy(bodyGeneration = _state.value.bodyGeneration + 1,
+            saveStatus = SaveStatus.Editing, canUndo = history.canUndo, canRedo = history.canRedo)
+        flush()
+    }
+
+    fun loadVersions() {
+        flush()
+        viewModelScope.launch { saveMutex.withLock { _versions.value = repository.versions(_state.value.id).first() } }
+    }
+
+    suspend fun versionPreview(id: String): Pair<String, String>? = repository.versionContent(_state.value.id, id)?.let { it.first to it.second }
+
+    fun recoverVersion(id: String, onResult: (String) -> Unit) {
+        appScope.launch(Dispatchers.Main.immediate) {
+            try {
+                val current = requireNotNull(repository.getNoteById(_state.value.id))
+                val version = requireNotNull(repository.versionContent(current.id, id)) { "This version cannot be decrypted" }
+                repository.duplicate(current.copy(title = version.first, content = version.second, attachments = version.third),
+                    "${version.first.ifBlank { "Untitled" }} (Recovered)")
+                onResult("Recovered copy saved to Home")
+            } catch (failure: Exception) { onResult(failure.message ?: "Could not recover this version") }
+        }
+    }
 
     /** The user's saved default export folder (SAF tree Uri string), or null to ask each time. */
     val defaultExportFolder: StateFlow<String?> =
@@ -174,12 +216,16 @@ class EditorViewModel : ViewModel() {
     }
 
     fun onTitleChanged(value: String) {
+        if (value == _state.value.title) return
+        rememberEdit("title")
         dirty = true
         _state.value = _state.value.copy(title = value, saveStatus = SaveStatus.Editing)
         scheduleAutoSave()
     }
 
     fun onContentChanged(value: String) {
+        if (value == _state.value.content) return
+        rememberEdit("content")
         dirty = true
         _state.value = _state.value.copy(
             content = value,
@@ -191,6 +237,8 @@ class EditorViewModel : ViewModel() {
 
     /** Commit a content change immediately (e.g. after inserting or removing an image). */
     fun commitContentNow(value: String) {
+        if (value == _state.value.content) { flush(); return }
+        rememberEdit()
         dirty = true
         _state.value = _state.value.copy(
             content = value,

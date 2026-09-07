@@ -39,6 +39,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Payments
+import androidx.compose.material.icons.rounded.DocumentScanner
 import androidx.compose.material.icons.rounded.ReceiptLong
 import androidx.compose.material.icons.rounded.Savings
 import androidx.compose.material.icons.rounded.SwapHoriz
@@ -96,8 +97,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
-private data class CompletionRequest(val accountId: String, val sectionId: String, val itemId: String)
 private data class SectionRemoval(val accountId: String, val sectionId: String)
+private data class ReceiptTarget(val accountId: String, val sectionId: String, val itemId: String? = null)
 
 @Composable
 internal fun ExpenseEditor(
@@ -109,6 +110,7 @@ internal fun ExpenseEditor(
     modifier: Modifier = Modifier,
     meta: @Composable () -> Unit = {},
     onCommitContent: (String) -> Unit = onContentChange,
+    saving: Boolean = false,
 ) {
     val loaded = remember(seedKey) { runCatching { ExpenseCodec.decode(content) } }
     var model by remember(seedKey) { mutableStateOf(loaded.getOrDefault(ExpenseModel())) }
@@ -117,7 +119,9 @@ internal fun ExpenseEditor(
     var editAccount by remember { mutableStateOf<ExpAccount?>(null) }
     var showSectionDialog by remember { mutableStateOf(false) }
     var balanceAccountId by remember { mutableStateOf<String?>(null) }
-    var completion by remember { mutableStateOf<CompletionRequest?>(null) }
+    var actionPending by remember { mutableStateOf(false) }
+    var actionError by remember { mutableStateOf<String?>(null) }
+    var receiptTarget by remember { mutableStateOf<ReceiptTarget?>(null) }
     var reversalId by remember { mutableStateOf<String?>(null) }
     var removeAccountId by remember { mutableStateOf<String?>(null) }
     var removeSection by remember { mutableStateOf<SectionRemoval?>(null) }
@@ -128,13 +132,18 @@ internal fun ExpenseEditor(
     val format: (Long) -> String = { money.format(BigDecimal.valueOf(it, 2)) }
     val account = model.accounts.firstOrNull { it.id == selectedId } ?: model.accounts.firstOrNull()
 
-    fun update(next: ExpenseModel, immediate: Boolean = false) {
-        if (readOnly || loaded.isFailure) return
-        runCatching {
+    LaunchedEffect(actionPending, saving) {
+        if (actionPending && !saving) actionPending = false
+    }
+
+    fun update(next: ExpenseModel, immediate: Boolean = false): Boolean {
+        if (readOnly || loaded.isFailure) return false
+        return runCatching {
             val encoded = ExpenseCodec.encode(next)
             if (immediate) onCommitContent(encoded) else onContentChange(encoded)
             model = next
-        }.onFailure { Toast.makeText(context, "Tracker was not changed: ${it.message}", Toast.LENGTH_LONG).show() }
+            true
+        }.onFailure { Toast.makeText(context, "Tracker was not changed: ${it.message}", Toast.LENGTH_LONG).show() }.getOrDefault(false)
     }
     fun changeAccount(accountId: String, transform: (ExpAccount) -> ExpAccount) {
         update(model.copy(accounts = model.accounts.map { if (it.id == accountId) transform(it) else it }))
@@ -146,7 +155,7 @@ internal fun ExpenseEditor(
     }
     fun changeItem(accountId: String, sectionId: String, itemId: String, transform: (ExpItem) -> ExpItem) {
         changeSection(accountId, sectionId) { section ->
-            section.copy(items = section.items.map { if (it.id == itemId && it.completedAt == null) transform(it) else it })
+            section.copy(items = section.items.map { if (it.id == itemId) transform(it) else it })
         }
     }
 
@@ -216,6 +225,11 @@ internal fun ExpenseEditor(
                         onDelete = { removeAccountId = account.id },
                     )
                 }
+                actionError?.let { message ->
+                    item(key = "action-error") {
+                        Text(message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
                 account.sections.forEach { section ->
                     item(key = "section:${account.id}:${section.id}") {
                         ExpenseSectionHeader(
@@ -228,22 +242,36 @@ internal fun ExpenseEditor(
                     items(section.items, key = { "item:${account.id}:${section.id}:${it.id}" }) { item ->
                         ExpenseItemRow(
                             item = item, kind = section.kind, accounts = model.accounts.filter { it.id != account.id },
-                            readOnly = readOnly, format = format,
+                            readOnly = readOnly, format = format, busy = saving || actionPending,
+                            onReceipt = { receiptTarget = ReceiptTarget(account.id, section.id, item.id) },
                             onName = { name -> changeItem(account.id, section.id, item.id) { it.copy(name = name) } },
                             onAmount = { amount -> changeItem(account.id, section.id, item.id) { it.copy(amount = amount) } },
                             onTarget = { target -> changeItem(account.id, section.id, item.id) { it.copy(toAccountId = target) } },
-                            onComplete = { completion = CompletionRequest(account.id, section.id, item.id) },
-                            onRepeat = {
-                                changeSection(account.id, section.id) { it.copy(items = it.items + item.copy(id = UUID.randomUUID().toString(), completedAt = null)) }
+                            onComplete = {
+                                if (!saving && !actionPending) {
+                                    actionError = null
+                                    runCatching { model.complete(account.id, section.id, item.id) }
+                                        .onSuccess { next ->
+                                            actionPending = true
+                                            update(next, immediate = true)
+                                        }
+                                        .onFailure { actionError = it.message ?: "Unable to record this action" }
+                                }
                             },
                             onDelete = { changeSection(account.id, section.id) { it.copy(items = it.items.filterNot { row -> row.id == item.id }) } },
                         )
                     }
                     if (!readOnly) item(key = "add:${account.id}:${section.id}") {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         TextButton(onClick = { changeSection(account.id, section.id) { it.copy(items = it.items + ExpItem()) } }) {
                             Icon(Icons.Rounded.Add, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Add transaction")
+                            Text("Add saved action")
+                        }
+                        Spacer(Modifier.weight(1f))
+                        if (section.kind in listOf(ExpenseKind.EXPENSE, ExpenseKind.SAVINGS, ExpenseKind.INVESTMENT)) {
+                            ExpenseIconButton(Icons.Rounded.DocumentScanner, "Add receipt", enabled = !saving) { receiptTarget = ReceiptTarget(account.id, section.id) }
+                        }
                         }
                     }
                 }
@@ -273,6 +301,23 @@ internal fun ExpenseEditor(
         }
     }
 
+    receiptTarget?.let { target ->
+        val targetAccount = model.accounts.firstOrNull { it.id == target.accountId }
+        val section = targetAccount?.sections?.firstOrNull { it.id == target.sectionId }
+        if (!readOnly && section != null) ReceiptCapture(
+            initial = section.items.firstOrNull { it.id == target.itemId },
+            onSave = { saved ->
+                update(model.copy(accounts = model.accounts.map { current ->
+                    if (current.id != target.accountId) current else current.copy(sections = current.sections.map { currentSection ->
+                        if (currentSection.id != target.sectionId) currentSection else currentSection.copy(items =
+                            if (target.itemId == null) currentSection.items + saved else currentSection.items.map { if (it.id == target.itemId) saved else it })
+                    })
+                }), immediate = true)
+            },
+            onDismiss = { receiptTarget = null },
+        )
+    }
+
     if (showAccountDialog && !readOnly) {
         ExpenseAccountDialog(
             initial = editAccount,
@@ -299,21 +344,6 @@ internal fun ExpenseEditor(
             balanceAccountId = null
         }
     }
-    completion?.let { request ->
-        if (!readOnly) {
-            val preview = runCatching { model.complete(request.accountId, request.sectionId, request.itemId) }
-            TransactionConfirmation(
-                title = "Complete transaction?", before = model, preview = preview, format = format,
-                onDismiss = { completion = null },
-                onConfirm = {
-                    runCatching { model.complete(request.accountId, request.sectionId, request.itemId) }
-                        .onSuccess { update(it, immediate = true) }
-                        .onFailure { Toast.makeText(context, it.message, Toast.LENGTH_LONG).show() }
-                    completion = null
-                },
-            )
-        }
-    }
     reversalId?.let { transactionId ->
         if (!readOnly) TransactionConfirmation(
             title = "Reverse transaction?", before = model,
@@ -329,7 +359,7 @@ internal fun ExpenseEditor(
     }
     removeAccountId?.let { accountId ->
         if (!readOnly) ExpenseDeleteDialog(
-            "Remove account?", "Its pending transactions will be removed. Completed activity will be kept. Other account balances will not change.",
+            "Remove account?", "Its saved actions will be removed. Recorded activity will be kept. Other account balances will not change.",
             onDismiss = { removeAccountId = null },
         ) {
             update(model.copy(accounts = model.accounts.filterNot { it.id == accountId }), immediate = true)
@@ -338,7 +368,7 @@ internal fun ExpenseEditor(
     }
     removeSection?.let { request ->
         if (!readOnly) ExpenseDeleteDialog(
-            "Remove section?", "Pending rows will be removed. Completed activity and account balances will be kept.",
+            "Remove section?", "Saved actions will be removed. Recorded activity and account balances will be kept.",
             onDismiss = { removeSection = null },
         ) {
             update(model.copy(accounts = model.accounts.map { current ->
@@ -367,7 +397,7 @@ private fun BalanceHeader(account: ExpAccount, format: (Long) -> String, readOnl
                     }
                 }
             }
-            Text("Current balance", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Recorded balance", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(format(account.balance), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 if (!readOnly) ExpenseIconButton(Icons.Rounded.Edit, "Set or correct balance", onClick = onAdjust)
@@ -375,12 +405,12 @@ private fun BalanceHeader(account: ExpAccount, format: (Long) -> String, readOnl
             if (account.tags.isNotEmpty()) {
                 Text(account.tags.joinToString(" / "), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            val planned = account.pendingOutflow()
+            val planned = account.configuredOutflow()
             if (planned > 0) {
                 Spacer(Modifier.height(8.dp))
-                Text("Pending outflow  ${format(planned)}", style = MaterialTheme.typography.bodySmall)
+                Text("Saved outflows  ${format(planned)}", style = MaterialTheme.typography.bodySmall)
                 Text(
-                    "After pending outflow  ${format(account.balance - planned)}",
+                    "After saved outflows  ${format(account.balance - planned)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (planned > account.balance) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -403,61 +433,73 @@ private fun ExpenseSectionHeader(section: ExpSection, readOnly: Boolean, format:
             )
             if (!readOnly) ExpenseIconButton(Icons.Rounded.Delete, "Remove section", onClick = onDelete)
         }
-        ExpenseKindPicker(section.kind, enabled = !readOnly && section.items.none { it.completedAt != null }, onSelect = onKind)
-        val pending = section.items.filter { it.completedAt == null }.sumOf { it.amount }
-        val completed = section.items.filter { it.completedAt != null }.sumOf { it.amount }
-        Text("Pending ${format(pending)} / Completed ${format(completed)}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        ExpenseKindPicker(section.kind, enabled = !readOnly, onSelect = onKind)
+        Text("${section.items.size} saved ${if (section.items.size == 1) "action" else "actions"} / ${format(section.items.sumOf { it.amount })}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
 @Composable
 private fun ExpenseItemRow(
     item: ExpItem, kind: ExpenseKind, accounts: List<ExpAccount>, readOnly: Boolean, format: (Long) -> String,
+    busy: Boolean,
+    onReceipt: () -> Unit,
     onName: (String) -> Unit, onAmount: (Long) -> Unit, onTarget: (String) -> Unit,
-    onComplete: () -> Unit, onRepeat: () -> Unit, onDelete: () -> Unit,
+    onComplete: () -> Unit, onDelete: () -> Unit,
 ) {
-    val completed = item.completedAt != null
-    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (completed) 0.3f else 0.15f)) {
+    var editing by rememberSaveable(item.id) { mutableStateOf(item.name.isBlank() || item.amount == 0L) }
+    var viewReceipt by remember { mutableStateOf(false) }
+    val valid = item.name.isNotBlank() && item.amount > 0 &&
+        (kind != ExpenseKind.TRANSFER || accounts.any { it.id == item.toAccountId })
+    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (completed) {
-                    Icon(Icons.Rounded.CheckCircle, "Completed", Modifier.size(20.dp), tint = MaterialTheme.colorScheme.tertiary)
-                    Spacer(Modifier.width(8.dp))
-                }
-                if (completed || readOnly) Text(item.name.ifBlank { "Unnamed transaction" }, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                else OutlinedTextField(value = item.name, onValueChange = onName, label = { Text("Transaction") }, singleLine = true, modifier = Modifier.weight(1f))
+                if (!editing || readOnly) Text(item.name.ifBlank { "Unnamed action" }, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                else OutlinedTextField(value = item.name, onValueChange = onName, label = { Text("Action name") }, singleLine = true, modifier = Modifier.weight(1f))
                 if (!readOnly) {
-                    if (completed) ExpenseIconButton(Icons.Rounded.ContentCopy, "Repeat as a new pending transaction", onClick = onRepeat)
-                    else ExpenseIconButton(Icons.Rounded.Close, "Remove pending transaction", onClick = onDelete)
+                    ExpenseIconButton(
+                        if (editing) Icons.Rounded.Check else Icons.Rounded.Edit,
+                        if (editing) "Save action" else "Edit saved action",
+                        enabled = !busy && (!editing || valid),
+                    ) { editing = !editing }
+                    if (editing) ExpenseIconButton(Icons.Rounded.Close, "Remove saved action", enabled = !busy, onClick = onDelete)
                 }
             }
             if (kind == ExpenseKind.TRANSFER) {
-                ExpenseAccountPicker(accounts, item.toAccountId, !readOnly && !completed, onTarget)
+                if (editing && !readOnly) ExpenseAccountPicker(accounts, item.toAccountId, !busy, onTarget)
+                else Text("To ${accounts.firstOrNull { it.id == item.toAccountId }?.name ?: "unavailable account"}", style = MaterialTheme.typography.bodySmall)
             }
-            if (completed || readOnly) {
+            if (!editing || readOnly) {
                 Text(format(item.amount), style = MaterialTheme.typography.titleMedium, color = kind.tint())
             } else ExpenseAmountField(item.amount, onAmount, "Amount")
+            if (item.receiptToken != null) {
+                TextButton(onClick = { viewReceipt = true }) { Icon(Icons.Rounded.ReceiptLong, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Receipt${item.receiptDate?.let { " / $it" }.orEmpty()}") }
+            }
+            if (editing && !readOnly && kind in listOf(ExpenseKind.EXPENSE, ExpenseKind.SAVINGS, ExpenseKind.INVESTMENT)) {
+                TextButton(onClick = onReceipt, enabled = !busy) { Icon(Icons.Rounded.DocumentScanner, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Attach receipt") }
+            }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (completed) "Completed ${expenseDate(requireNotNull(item.completedAt))}" else "Pending",
+                    item.completedAt?.let { "Last recorded ${expenseDate(it)}" } ?: "Not recorded yet",
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                if (!readOnly && !completed) Button(
+                if (!readOnly && !editing) Button(
                     onClick = onComplete,
-                    enabled = item.name.isNotBlank() && item.amount > 0 && (kind != ExpenseKind.TRANSFER || accounts.any { it.id == item.toAccountId }),
+                    enabled = valid && !busy,
                 ) {
                     Icon(Icons.Rounded.Check, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Complete")
+                    Text("Record")
                 }
             }
         }
     }
+    if (viewReceipt && item.receiptToken != null) ReceiptImage(item.receiptToken, onDismiss = { viewReceipt = false })
 }
 
 @Composable
 private fun ExpenseActivityRow(record: ExpTransaction, accountId: String?, format: (Long) -> String, readOnly: Boolean, onReverse: () -> Unit) {
+    var viewReceipt by remember(record.id) { mutableStateOf(false) }
     val incoming = accountId != null && record.toAccountId == accountId
     val delta = if (incoming) { if (record.reversalOf == null) record.amount else -record.amount } else record.balanceDelta
     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -485,8 +527,12 @@ private fun ExpenseActivityRow(record: ExpTransaction, accountId: String?, forma
             else -> "Completed"
         }
         Text("$status / ${expenseDate(record.completedAt)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (record.receiptToken != null) TextButton(onClick = { viewReceipt = true }) {
+            Icon(Icons.Rounded.ReceiptLong, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Receipt${record.receiptDate?.let { " / $it" }.orEmpty()}")
+        }
         HorizontalDivider(Modifier.padding(top = 6.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
     }
+    if (viewReceipt && record.receiptToken != null) ReceiptImage(record.receiptToken, onDismiss = { viewReceipt = false })
 }
 
 @Composable

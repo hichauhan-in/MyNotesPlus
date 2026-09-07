@@ -81,6 +81,7 @@ class SettingsRepository(context: Context) {
         val WRAPPED_DEK = stringPreferencesKey("wrapped_dek")
         // Comma-joined note ids that were present at the last successful sync (the merge base).
         val SYNCED_IDS = stringPreferencesKey("synced_note_ids")
+        val SYNCED_VERSIONS = stringPreferencesKey("synced_note_versions")
         // Comma-joined reminder ids present at the last successful sync (their merge base).
         val SYNCED_REMINDER_IDS = stringPreferencesKey("synced_reminder_ids")
         val SYNC_PROMPTED = booleanPreferencesKey("sync_prompted")
@@ -171,6 +172,16 @@ class SettingsRepository(context: Context) {
 
     suspend fun setSyncedNoteIds(ids: Set<String>) = edit { it[Keys.SYNCED_IDS] = ids.joinToString(",") }
 
+    suspend fun syncedNoteVersions(): Map<String, Long> {
+        val objectValue = JSONObject(dataStore.data.first()[Keys.SYNCED_VERSIONS] ?: "{}")
+        return objectValue.keys().asSequence().associateWith { objectValue.getLong(it) }
+    }
+
+    suspend fun setSyncedNoteVersions(versions: Map<String, Long>) = edit {
+        it[Keys.SYNCED_VERSIONS] = JSONObject(versions).toString()
+        it[Keys.SYNCED_IDS] = versions.keys.joinToString(",")
+    }
+
     /** The merge-base set of reminder ids from the last successful sync. */
     suspend fun syncedReminderIds(): Set<String> =
         dataStore.data.first()[Keys.SYNCED_REMINDER_IDS]?.split(",")?.filter { it.isNotBlank() }?.toSet() ?: emptySet()
@@ -218,6 +229,25 @@ class SettingsRepository(context: Context) {
     suspend fun addTemplate(template: CustomTemplate) = dataStore.edit { prefs ->
         val current = parseTemplates(prefs[Keys.TEMPLATES] ?: "[]")
         prefs[Keys.TEMPLATES] = serializeTemplates(current + template.copy(updatedAt = System.currentTimeMillis()))
+    }
+
+    internal suspend fun appendImportedTemplates(items: List<CustomTemplate>) = dataStore.edit { prefs ->
+        val existing = JSONArray(prefs[Keys.TEMPLATES] ?: "[]")
+        val ids = (0 until existing.length()).map { existing.getJSONObject(it).getString("id") }.toSet()
+        require(items.none { it.id in ids }) { "Template already exists" }
+        val added = JSONArray(serializeTemplates(items))
+        for (index in 0 until added.length()) existing.put(added.getJSONObject(index))
+        prefs[Keys.TEMPLATES] = existing.toString()
+    }
+
+    internal suspend fun removeImportedTemplates(ids: Set<String>) = dataStore.edit { prefs ->
+        val existing = JSONArray(prefs[Keys.TEMPLATES] ?: "[]")
+        val kept = JSONArray()
+        for (index in 0 until existing.length()) {
+            val item = existing.getJSONObject(index)
+            if (item.getString("id") !in ids) kept.put(item)
+        }
+        prefs[Keys.TEMPLATES] = kept.toString()
     }
 
     suspend fun updateTemplate(template: CustomTemplate) = dataStore.edit { prefs ->
@@ -269,9 +299,28 @@ class SettingsRepository(context: Context) {
     suspend fun allTemplatesForSync(): List<CustomTemplate> =
         parseTemplates(dataStore.data.first()[Keys.TEMPLATES] ?: "[]")
 
+    internal suspend fun templateAttachmentNamesForCleanup(): Set<String>? {
+        val array = JSONArray(dataStore.data.first()[Keys.TEMPLATES] ?: "[]")
+        val names = mutableSetOf<String>()
+        for (index in 0 until array.length()) {
+            val stored = array.getJSONObject(index).optString("content")
+            val content = EncryptionManager.decryptOrNull(stored) ?: return null
+            names.addAll(com.example.domain.model.AttachmentMarkup.fileNames(content))
+        }
+        return names
+    }
+
     /** Overwrites the whole template list (used by cloud sync after merging). */
     suspend fun replaceAllTemplates(items: List<CustomTemplate>) = dataStore.edit { prefs ->
         prefs[Keys.TEMPLATES] = serializeTemplates(items)
+    }
+
+    internal suspend fun mergeSyncedTemplates(incoming: List<CustomTemplate>) = dataStore.edit { prefs ->
+        val current = parseTemplates(prefs[Keys.TEMPLATES] ?: "[]")
+        val merged = (incoming + current).groupBy { it.id }.values.map { copies ->
+            copies.maxBy { maxOf(it.updatedAt, it.trashedAt ?: 0L) }
+        }
+        prefs[Keys.TEMPLATES] = serializeTemplates(merged)
     }
 
     private fun parseTemplates(json: String): List<CustomTemplate> = runCatching {

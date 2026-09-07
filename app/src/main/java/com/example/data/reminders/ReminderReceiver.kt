@@ -19,18 +19,11 @@ class ReminderReceiver : BroadcastReceiver() {
             try {
                 AppContainer.init(appContext)
                 val repo = AppContainer.reminderRepository ?: return@launch
-                val reminder = repo.getById(id) ?: return@launch
-                if (!reminder.enabled) return@launch
-                NotificationHelper.notify(appContext, reminder)
-                val next = ReminderScheduler.nextOccurrence(reminder.triggerAt, reminder.repeat)
-                if (next != null) {
-                    repo.setTriggerAt(id, next)
-                    ReminderScheduler.schedule(appContext, reminder.copy(triggerAt = next))
-                } else {
-                    // One-shot: mark done so it isn't re-armed on the next reboot.
-                    repo.setEnabled(id, false)
-                }
+                val expectedAt = if (intent.hasExtra(EXTRA_AT)) intent.getLongExtra(EXTRA_AT, 0) else null
+                repo.fire(appContext, id, expectedAt)
                 WidgetUpdater.refreshAll(appContext)
+            } catch (failure: Exception) {
+                android.util.Log.w("MyNotesReminders", "Could not deliver reminder", failure)
             } finally {
                 pending.finish()
             }
@@ -40,5 +33,6 @@ class ReminderReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_FIRE = "com.example.reminder.FIRE"
         const val EXTRA_ID = "reminder_id"
+        const val EXTRA_AT = "reminder_occurrence"
     }
 }

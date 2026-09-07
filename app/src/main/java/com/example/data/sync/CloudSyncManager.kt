@@ -147,7 +147,7 @@ class CloudSyncManager(
         settings.setWrappedDataKey(null)
         settings.setDriveFolderId(null)
         settings.setRecoveryConfigured(false)
-        settings.setSyncedNoteIds(emptySet())
+        settings.setSyncedNoteVersions(emptyMap())
         settings.setSyncedReminderIds(emptySet())
     }
 
@@ -162,7 +162,13 @@ class CloudSyncManager(
     suspend fun syncNow(accessToken: String): SyncOutcome = syncMutex.withLock {
         SyncStatus.setSyncing(true)
         try {
-            syncInternal(accessToken)
+            syncInternal(accessToken).also { outcome ->
+                SyncStatus.setError(when (outcome) {
+                    is SyncOutcome.Success -> null
+                    SyncOutcome.NotUnlocked -> "Enter your recovery passphrase to sync."
+                    SyncOutcome.Error -> "Sync is incomplete. Local notes are saved; reconnect or retry sync."
+                })
+            }
         } finally {
             SyncStatus.setSyncing(false)
         }
@@ -177,45 +183,67 @@ class CloudSyncManager(
             val remote = DriveRest.listFolderNotes(accessToken, folderId) ?: return@withContext SyncOutcome.Error
             val remoteById = remote.associateBy { it.noteId }
             val localStamps = noteRepository.idStamps()
-            val base = settings.syncedNoteIds()
+            val base = settings.syncedNoteVersions()
             val validFolderIds = folderRepository.folderIdsOnce()
 
             val allIds = HashSet<String>().apply {
-                addAll(localStamps.keys); addAll(remoteById.keys); addAll(base)
+                addAll(localStamps.keys); addAll(remoteById.keys); addAll(base.keys)
             }
-            val newBase = HashSet<String>()
+            val newBase = base.toMutableMap()
             var pushed = 0; var pulled = 0; var deletedLocal = 0; var deletedRemote = 0
+            var failed = false
 
             for (id in allIds) {
                 val local = localStamps[id]
                 val rmeta = remoteById[id]
-                val inBase = id in base
-                when {
-                    local != null && rmeta != null -> when {
-                        local > rmeta.updatedAt ->
-                            if (push(accessToken, folderId, id, rmeta.fileId, dek)) { pushed++; newBase.add(id) }
-                        rmeta.updatedAt > local ->
-                            if (pull(accessToken, rmeta, dek, validFolderIds)) { pulled++; newBase.add(id) }
-                        else -> newBase.add(id)
+                try {
+                    when (SyncMergePolicy.decide(local, rmeta?.updatedAt, base[id])) {
+                        MergeAction.UNCHANGED -> if (local != null) newBase[id] = local else newBase.remove(id)
+                        MergeAction.PUSH, MergeAction.KEEP_BOTH -> {
+                            val download = rmeta?.let { requireNotNull(DriveRest.downloadNote(accessToken, it.fileId)) }
+                            val remoteNote = download?.let { downloaded ->
+                                val decoded = SyncCrypto.decrypt(SyncCrypto.decodeBase64(downloaded.content), dek)
+                                val note = requireNotNull(decoded?.let { noteFromJson(String(it, Charsets.UTF_8)) })
+                                check(note.id == id && note.updatedAt == rmeta.updatedAt) { "Remote note changed; retry sync" }
+                                note
+                            }
+                            if (remoteNote != null && SyncMergePolicy.decide(local, remoteNote.updatedAt, base[id]) == MergeAction.KEEP_BOTH) {
+                                noteRepository.duplicate(remoteNote.copy(folderId = remoteNote.folderId?.takeIf { it in validFolderIds }),
+                                    "${remoteNote.title.ifBlank { "Untitled" }} (Conflict copy)")
+                            }
+                            val stamp = requireNotNull(push(accessToken, folderId, id, rmeta?.fileId, dek, download?.etag))
+                            pushed++
+                            newBase[id] = stamp
+                        }
+                        MergeAction.PULL -> {
+                            check(pull(accessToken, requireNotNull(rmeta), dek, validFolderIds, local))
+                            pulled++
+                            newBase[id] = rmeta.updatedAt
+                        }
+                        MergeAction.TRASH_LOCAL -> {
+                            check(noteRepository.idStamps()[id] == local)
+                            noteRepository.setTrashed(id, true)
+                            deletedLocal++
+                            newBase.remove(id)
+                        }
+                        MergeAction.DELETE_REMOTE -> {
+                            val metadata = requireNotNull(rmeta)
+                            val download = requireNotNull(DriveRest.downloadNote(accessToken, metadata.fileId))
+                            val decoded = requireNotNull(SyncCrypto.decrypt(SyncCrypto.decodeBase64(download.content), dek))
+                            val note = requireNotNull(noteFromJson(String(decoded, Charsets.UTF_8)))
+                            check(note.id == id && note.updatedAt == metadata.updatedAt)
+                            check(DriveRest.deleteFile(accessToken, metadata.fileId, download.etag))
+                            deletedRemote++
+                            newBase.remove(id)
+                        }
                     }
-                    local != null && rmeta == null ->
-                        if (inBase) {
-                            noteRepository.deletePermanently(id); deletedLocal++
-                        } else if (push(accessToken, folderId, id, null, dek)) {
-                            pushed++; newBase.add(id)
-                        }
-                    local == null && rmeta != null ->
-                        if (inBase) {
-                            if (DriveRest.deleteFile(accessToken, rmeta.fileId)) deletedRemote++
-                        } else if (pull(accessToken, rmeta, dek, validFolderIds)) {
-                            pulled++; newBase.add(id)
-                        }
-                    // else: only in base -> gone from both sides, drop from the base.
-                }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) { failed = true }
             }
-            settings.setSyncedNoteIds(newBase)
-            syncTemplates(accessToken, dek)
-            syncReminders(accessToken, dek)
+            settings.setSyncedNoteVersions(newBase)
+            if (failed) return@withContext SyncOutcome.Error
+            if (!syncTemplates(accessToken, dek) || !syncReminders(accessToken, dek)) return@withContext SyncOutcome.Error
             settings.setLastSyncedAt(System.currentTimeMillis())
             SyncOutcome.Success(pushed, pulled, deletedLocal, deletedRemote)
         } catch (e: Exception) {
@@ -230,10 +258,11 @@ class CloudSyncManager(
         id: String,
         existingFileId: String?,
         dek: ByteArray,
-    ): Boolean {
-        val note = noteRepository.decryptedNoteForSync(id) ?: return false
+        etag: String? = null,
+    ): Long? {
+        val note = noteRepository.decryptedNoteForSync(id) ?: return null
         val blob = SyncCrypto.encodeBase64(SyncCrypto.encrypt(noteToJson(note).toByteArray(Charsets.UTF_8), dek))
-        return DriveRest.putNoteFile(accessToken, folderId, id, "$id.mnote", blob, note.updatedAt, existingFileId) != null
+        return if (DriveRest.putNoteFile(accessToken, folderId, id, "$id.mnote", blob, note.updatedAt, existingFileId, etag) != null) note.updatedAt else null
     }
 
     /** Downloads, decrypts and writes a single remote note into the local database. */
@@ -242,11 +271,13 @@ class CloudSyncManager(
         rmeta: RemoteNoteMeta,
         dek: ByteArray,
         validFolderIds: Set<String>,
+        expectedLocalStamp: Long?,
     ): Boolean {
-        val content = DriveRest.downloadText(accessToken, rmeta.fileId) ?: return false
+        val content = DriveRest.downloadNote(accessToken, rmeta.fileId)?.content ?: return false
         val decrypted = SyncCrypto.decrypt(SyncCrypto.decodeBase64(content), dek) ?: return false
         val note = noteFromJson(String(decrypted, Charsets.UTF_8)) ?: return false
-        noteRepository.importFromSync(note, validFolderIds)
+        if (note.id != rmeta.noteId || note.updatedAt != rmeta.updatedAt) return false
+        noteRepository.importFromSync(note, validFolderIds, expectedLocalStamp)
         return true
     }
 
@@ -257,29 +288,24 @@ class CloudSyncManager(
      * or restoring a template on one device propagates to the others. Best-effort: a failure here
      * never fails the note sync.
      */
-    private suspend fun syncTemplates(accessToken: String, dek: ByteArray) {
-        try {
+    private suspend fun syncTemplates(accessToken: String, dek: ByteArray): Boolean {
+        return try {
             val local = settings.allTemplatesForSync()
-            val remoteFileId = DriveRest.findAppDataFile(accessToken, TEMPLATES_NAME)
-            val remote: List<CustomTemplate> = remoteFileId?.let { fid ->
-                DriveRest.downloadText(accessToken, fid)?.let { b64 ->
-                    SyncCrypto.decrypt(SyncCrypto.decodeBase64(b64), dek)?.let { bytes ->
-                        templatesFromJson(String(bytes, Charsets.UTF_8))
-                    }
-                }
-            } ?: emptyList()
+            val remoteFileId = verifiedCollectionId(accessToken, TEMPLATES_NAME)
+            val download = remoteFileId?.let { requireNotNull(DriveRest.downloadNote(accessToken, it)) }
+            val remote = download?.let { templatesFromJson(decryptCollection(it.content, dek)) } ?: emptyList()
 
             val merged = mergeTemplates(local, remote)
-            if (merged.toSet() != local.toSet()) settings.replaceAllTemplates(merged)
             if (remoteFileId == null || merged.toSet() != remote.toSet()) {
                 val blob = SyncCrypto.encodeBase64(
                     SyncCrypto.encrypt(templatesToJson(merged).toByteArray(Charsets.UTF_8), dek),
                 )
-                DriveRest.upsertAppDataFile(accessToken, TEMPLATES_NAME, blob)
+                check(putCollection(accessToken, TEMPLATES_NAME, remoteFileId, download?.etag, blob))
             }
-        } catch (e: Exception) {
-            // Best-effort - note sync already succeeded.
-        }
+            if (merged.toSet() != local.toSet()) settings.mergeSyncedTemplates(merged)
+            true
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (_: Exception) { false }
     }
 
     private fun templateStamp(t: CustomTemplate): Long = maxOf(t.updatedAt, t.trashedAt ?: 0L)
@@ -301,18 +327,13 @@ class CloudSyncManager(
      * reminders are re-armed with AlarmManager so they actually fire here. Best-effort: a failure
      * here never fails the note sync.
      */
-    private suspend fun syncReminders(accessToken: String, dek: ByteArray) {
-        try {
+    private suspend fun syncReminders(accessToken: String, dek: ByteArray): Boolean {
+        return try {
             val local = reminderRepository.allForSync()
             val localById = local.associateBy { it.id }
-            val remoteFileId = DriveRest.findAppDataFile(accessToken, REMINDERS_NAME)
-            val remote: List<Reminder> = remoteFileId?.let { fid ->
-                DriveRest.downloadText(accessToken, fid)?.let { b64 ->
-                    SyncCrypto.decrypt(SyncCrypto.decodeBase64(b64), dek)?.let { bytes ->
-                        remindersFromJson(String(bytes, Charsets.UTF_8))
-                    }
-                }
-            } ?: emptyList()
+            val remoteFileId = verifiedCollectionId(accessToken, REMINDERS_NAME)
+            val download = remoteFileId?.let { requireNotNull(DriveRest.downloadNote(accessToken, it)) }
+            val remote = download?.let { remindersFromJson(decryptCollection(it.content, dek)) } ?: emptyList()
             val remoteById = remote.associateBy { it.id }
             val base = settings.syncedReminderIds()
 
@@ -341,21 +362,34 @@ class CloudSyncManager(
 
             // Only touch local rows that actually changed (avoids re-encrypt churn + UI thrash).
             val upserts = merged.filter { localById[it.id] != it }
-            if (upserts.isNotEmpty() || deleteLocal.isNotEmpty()) {
-                reminderRepository.applySyncedSet(appContext, upserts, deleteLocal)
-            }
-            settings.setSyncedReminderIds(newBase)
-
             if (remoteFileId == null || merged.toSet() != remote.toSet()) {
                 val blob = SyncCrypto.encodeBase64(
                     SyncCrypto.encrypt(remindersToJson(merged).toByteArray(Charsets.UTF_8), dek),
                 )
-                DriveRest.upsertAppDataFile(accessToken, REMINDERS_NAME, blob)
+                check(putCollection(accessToken, REMINDERS_NAME, remoteFileId, download?.etag, blob))
             }
-        } catch (e: Exception) {
-            // Best-effort - note sync already succeeded.
-        }
+            if (upserts.isNotEmpty() || deleteLocal.isNotEmpty()) {
+                reminderRepository.applySyncedSet(appContext, upserts, deleteLocal, localById.mapValues { it.value.updatedAt })
+            }
+            settings.setSyncedReminderIds(newBase)
+            true
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (_: Exception) { false }
     }
+
+    private fun verifiedCollectionId(accessToken: String, name: String): String? = when (DriveRest.appDataFileExists(accessToken, name)) {
+        true -> requireNotNull(DriveRest.findAppDataFile(accessToken, name)) { "Could not read sync metadata" }
+        false -> null
+        null -> error("Could not verify sync metadata")
+    }
+
+    private fun decryptCollection(content: String, key: ByteArray): String = String(
+        requireNotNull(SyncCrypto.decrypt(SyncCrypto.decodeBase64(content), key)) { "Sync metadata is unavailable or damaged" }, Charsets.UTF_8,
+    )
+
+    private fun putCollection(accessToken: String, name: String, fileId: String?, etag: String?, content: String): Boolean =
+        if (fileId == null) DriveRest.upsertAppDataFile(accessToken, name, content) != null
+        else DriveRest.updateCollection(accessToken, fileId, content, requireNotNull(etag))
 
     private fun remindersToJson(items: List<Reminder>): String {
         val arr = JSONArray()
@@ -370,17 +404,23 @@ class CloudSyncManager(
                 .put("enabled", it.enabled)
                 .put("createdAt", it.createdAt)
                 .put("updatedAt", it.updatedAt)
+                .put("completedAt", it.completedAt ?: JSONObject.NULL)
+                .put("lastNotifiedAt", it.lastNotifiedAt ?: JSONObject.NULL)
+                .put("snoozedUntil", it.snoozedUntil ?: JSONObject.NULL)
+                .put("repeatAnchorAt", it.repeatAnchorAt)
+                .put("checklistText", it.checklistText ?: JSONObject.NULL)
             arr.put(o)
         }
         return arr.toString()
     }
 
-    private fun remindersFromJson(text: String): List<Reminder> = runCatching {
+    private fun remindersFromJson(text: String): List<Reminder> {
         val arr = JSONArray(text)
-        (0 until arr.length()).mapNotNull { i ->
+        require(arr.length() <= 20_000) { "Too many synced reminders" }
+        return (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
             val id = o.optString("id")
-            if (id.isBlank()) return@mapNotNull null
+            require(id.isNotBlank()) { "Invalid synced reminder" }
             Reminder(
                 id = id,
                 title = o.optString("title"),
@@ -392,9 +432,14 @@ class CloudSyncManager(
                 enabled = o.optBoolean("enabled", true),
                 createdAt = o.optLong("createdAt"),
                 updatedAt = o.optLong("updatedAt", o.optLong("createdAt")),
+                completedAt = if (o.isNull("completedAt")) null else o.getLong("completedAt"),
+                lastNotifiedAt = if (o.isNull("lastNotifiedAt")) null else o.getLong("lastNotifiedAt"),
+                snoozedUntil = if (o.isNull("snoozedUntil")) null else o.getLong("snoozedUntil"),
+                repeatAnchorAt = o.optLong("repeatAnchorAt", o.optLong("triggerAt")),
+                checklistText = if (o.isNull("checklistText")) null else o.getString("checklistText"),
             )
         }
-    }.getOrDefault(emptyList())
+    }
 
     private fun templatesToJson(items: List<CustomTemplate>): String {
         val arr = JSONArray()
@@ -411,10 +456,12 @@ class CloudSyncManager(
         return arr.toString()
     }
 
-    private fun templatesFromJson(text: String): List<CustomTemplate> = runCatching {
+    private fun templatesFromJson(text: String): List<CustomTemplate> {
         val arr = JSONArray(text)
-        (0 until arr.length()).map { i ->
+        require(arr.length() <= 20_000) { "Too many synced templates" }
+        return (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
+            require(o.optString("id").isNotBlank()) { "Invalid synced template" }
             CustomTemplate(
                 id = o.optString("id"),
                 name = o.optString("name"),
@@ -424,7 +471,7 @@ class CloudSyncManager(
                 updatedAt = o.optLong("updatedAt", 0L),
             )
         }
-    }.getOrDefault(emptyList())
+    }
 
     private fun noteToJson(n: Note): String = JSONObject()
         .put("id", n.id)

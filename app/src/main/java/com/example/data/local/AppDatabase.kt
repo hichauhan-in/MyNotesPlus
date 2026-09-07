@@ -6,8 +6,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [NoteEntity::class, FolderEntity::class, ReminderEntity::class],
-    version = 8,
+    entities = [NoteEntity::class, FolderEntity::class, ReminderEntity::class, NoteVersionEntity::class],
+    version = 10,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -16,6 +16,24 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun reminderDao(): ReminderDao
 
     companion object {
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE reminders ADD COLUMN completedAt INTEGER")
+                db.execSQL("ALTER TABLE reminders ADD COLUMN lastNotifiedAt INTEGER")
+                db.execSQL("ALTER TABLE reminders ADD COLUMN snoozedUntil INTEGER")
+                db.execSQL("ALTER TABLE reminders ADD COLUMN repeatAnchorAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE reminders ADD COLUMN encryptedChecklistText TEXT")
+                db.execSQL("UPDATE reminders SET repeatAnchorAt = triggerAt")
+            }
+        }
+
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS note_versions (id TEXT NOT NULL PRIMARY KEY, noteId TEXT NOT NULL, encryptedTitle TEXT NOT NULL, encryptedContent TEXT NOT NULL, type TEXT NOT NULL, attachments TEXT NOT NULL, updatedAt INTEGER NOT NULL, FOREIGN KEY(noteId) REFERENCES notes(id) ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_note_versions_noteId ON note_versions(noteId)")
+            }
+        }
+
         /** Adds the note `type` column (TEXT / CHECKLIST) without wiping existing notes. */
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {

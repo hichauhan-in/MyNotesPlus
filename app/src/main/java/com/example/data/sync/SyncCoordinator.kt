@@ -91,7 +91,10 @@ object SyncCoordinator {
             val snapshot = settings.snapshot()
             if (snapshot.driveAccountEmail == null || !snapshot.recoveryConfigured) return
             if (!manager.hasLocalKey()) return
-            val token = silentToken(appCtx) ?: return
+            val token = silentToken(appCtx) ?: run {
+                SyncStatus.setError("Drive is unavailable. Check your connection or reconnect in Settings.")
+                return
+            }
             manager.syncNow(token)
         } finally {
             inFlight.set(false)

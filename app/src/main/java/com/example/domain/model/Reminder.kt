@@ -28,4 +28,12 @@ data class Reminder(
     val createdAt: Long = System.currentTimeMillis(),
     /** Last time this reminder was created or changed - the tiebreaker for cloud last-write-wins. */
     val updatedAt: Long = System.currentTimeMillis(),
-)
+    val completedAt: Long? = null,
+    val lastNotifiedAt: Long? = null,
+    val snoozedUntil: Long? = null,
+    val repeatAnchorAt: Long = triggerAt,
+    val checklistText: String? = null,
+) {
+    val effectiveAt: Long get() = snoozedUntil ?: triggerAt
+    val isCompleted: Boolean get() = repeat == ReminderRepeat.NONE && completedAt != null
+}

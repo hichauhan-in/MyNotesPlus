@@ -18,14 +18,16 @@ internal object ExpenseReport {
                 add("Account: ${account.name}")
                 add("Current balance: ${money(account.balance)}")
                 if (account.tags.isNotEmpty()) add("Tags: ${account.tags.joinToString(", ")}")
-                add("Pending outflow: ${money(account.pendingOutflow())}")
+                add("Saved outflows: ${money(account.configuredOutflow())}")
                 account.sections.forEach { section ->
                     add("")
                     add("${section.name} (${section.kind.label})")
                     section.items.forEach { item ->
-                        val state = item.completedAt?.let { "Completed ${date(it)}" } ?: "Pending"
+                        val state = item.completedAt?.let { "Reusable / Last recorded ${date(it)}" } ?: "Reusable / Not recorded yet"
                         val destination = if (section.kind == ExpenseKind.TRANSFER) " / To: ${names[item.toAccountId] ?: "Unavailable account"}" else ""
                         add("  [$state] ${item.name}: ${money(item.amount)}$destination")
+                        item.receiptDate?.let { add("    Receipt date: $it") }
+                        item.receiptToken?.let { token -> com.example.domain.model.AttachmentMarkup.parseLine(token)?.let { add("    Receipt: attachments/${it.fileName}") } }
                     }
                 }
                 add("")
@@ -42,6 +44,8 @@ internal object ExpenseReport {
                     }
                     record.reversedAt?.let { add("  Reversed at ${date(it)}") }
                     add("  Record: ${record.id}")
+                    record.receiptDate?.let { add("  Receipt date: $it") }
+                    record.receiptToken?.let { token -> com.example.domain.model.AttachmentMarkup.parseLine(token)?.let { add("  Receipt: attachments/${it.fileName}") } }
                     record.reversalOf?.let { add("  Reverses: $it") }
                 }
             }

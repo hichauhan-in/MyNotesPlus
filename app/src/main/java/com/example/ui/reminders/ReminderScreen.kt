@@ -40,6 +40,10 @@ import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Snooze
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.rounded.StickyNote2
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -55,6 +59,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,6 +82,7 @@ import java.util.Calendar
 import java.util.Locale
 
 private val reminderTimeFormat = SimpleDateFormat("EEE, d MMM · h:mm a", Locale.getDefault())
+private enum class ReminderFilter(val label: String) { ALL("All"), TODAY("Today"), OVERDUE("Overdue"), UPCOMING("Upcoming"), DONE("Done"), OFF("Off") }
 
 @Composable
 fun ReminderScreen(
@@ -84,6 +91,24 @@ fun ReminderScreen(
     onOpenNote: (String) -> Unit,
 ) {
     val reminders by viewModel.reminders.collectAsStateWithLifecycle()
+    val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
+    var filter by rememberSaveable { mutableStateOf(ReminderFilter.ALL) }
+    val now by produceState(System.currentTimeMillis()) {
+        while (true) { kotlinx.coroutines.delay(30_000); value = System.currentTimeMillis() }
+    }
+    val today = Calendar.getInstance().apply { timeInMillis = now; set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0) }
+    val tomorrow = (today.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, 1) }.timeInMillis
+    val visible = reminders.filter { reminder ->
+        when (filter) {
+            ReminderFilter.ALL -> true
+            ReminderFilter.DONE -> reminder.isCompleted
+            ReminderFilter.OFF -> !reminder.enabled && !reminder.isCompleted
+            ReminderFilter.TODAY -> reminder.enabled && !reminder.isCompleted && reminder.effectiveAt in today.timeInMillis until tomorrow
+            ReminderFilter.OVERDUE -> reminder.enabled && !reminder.isCompleted && reminder.effectiveAt < now
+            ReminderFilter.UPCOMING -> reminder.enabled && !reminder.isCompleted && reminder.effectiveAt >= tomorrow
+        }
+    }.sortedWith(compareBy<Reminder> { !it.enabled || it.isCompleted }.thenBy { it.effectiveAt })
     val context = LocalContext.current
     val insets = WindowInsets.systemBars.asPaddingValues()
     val listSidePadding = responsiveHorizontalPadding(compact = 16.dp)
@@ -134,6 +159,16 @@ fun ReminderScreen(
                 }
             })
         }
+
+        if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            TextButton(onClick = {
+                com.example.data.reminders.NotificationHelper.openSettings(context)
+            }) { Text("Notifications are off") }
+        }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ReminderFilter.entries.forEach { option -> FilterChip(selected = filter == option, onClick = { filter = option }, label = { Text(option.label) }) }
+        }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) }
 
         if (reminders.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -192,9 +227,13 @@ fun ReminderScreen(
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                items(reminders, key = { it.id }) { reminder ->
+                if (visible.isEmpty()) item { Text("No reminders in ${filter.label.lowercase()}", modifier = Modifier.padding(vertical = 24.dp)) }
+                items(visible, key = { it.id }) { reminder ->
                     ReminderRow(
                         reminder = reminder,
+                        busy = busy,
+                        onDone = { viewModel.complete(context, reminder) },
+                        onSnooze = { viewModel.snooze(context, reminder) },
                         onToggle = { enabled -> viewModel.setEnabled(context, reminder, enabled) },
                         onClick = {
                             editorFor = reminder
@@ -211,10 +250,10 @@ fun ReminderScreen(
         ReminderEditorSheet(
             initial = editorFor,
             onSave = { reminder ->
-                viewModel.save(context, reminder)
-                requestNotifPermission()
-                showEditor = false
+                viewModel.save(context, reminder) { requestNotifPermission(); showEditor = false }
             },
+            busy = busy,
+            error = error,
             onDelete = editorFor?.let { existing -> { viewModel.delete(context, existing); showEditor = false } },
             onDismiss = { showEditor = false },
         )
@@ -224,6 +263,9 @@ fun ReminderScreen(
 @Composable
 private fun ReminderRow(
     reminder: Reminder,
+    busy: Boolean,
+    onDone: () -> Unit,
+    onSnooze: () -> Unit,
     onToggle: (Boolean) -> Unit,
     onClick: () -> Unit,
     onOpenNote: () -> Unit,
@@ -264,7 +306,7 @@ private fun ReminderRow(
                 )
                 Spacer(Modifier.width(5.dp))
                 Text(
-                    text = reminderTimeFormat.format(reminder.triggerAt) +
+                    text = (if (reminder.isCompleted) "Completed " else if (reminder.snoozedUntil != null) "Snoozed until " else "") + reminderTimeFormat.format(reminder.completedAt.takeIf { reminder.isCompleted } ?: reminder.effectiveAt) +
                         if (reminder.repeat != ReminderRepeat.NONE) " · ${reminder.repeat.label}" else "",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -293,10 +335,17 @@ private fun ReminderRow(
                     )
                 }
             }
+            if (reminder.enabled && !reminder.isCompleted) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onDone, enabled = !busy) { Icon(Icons.Rounded.Check, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Done") }
+                    TextButton(onClick = onSnooze, enabled = !busy) { Icon(Icons.Rounded.Snooze, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("15 min") }
+                }
+            }
         }
         Spacer(Modifier.width(10.dp))
         Switch(
             checked = reminder.enabled,
+            enabled = !busy && !reminder.isCompleted,
             onCheckedChange = onToggle,
             colors = mynotesSwitchColors(),
         )

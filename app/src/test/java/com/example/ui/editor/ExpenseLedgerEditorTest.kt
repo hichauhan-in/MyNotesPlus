@@ -3,7 +3,6 @@ package com.example.ui.editor
 import android.app.Application
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -16,6 +15,7 @@ import com.example.domain.model.ExpItem
 import com.example.domain.model.ExpSection
 import com.example.domain.model.ExpenseKind
 import com.example.domain.model.ExpenseModel
+import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Rule
@@ -25,7 +25,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], application = Application::class)
+@Config(qualifiers = RobolectricDeviceQualifiers.Pixel8, sdk = [35], application = Application::class)
 class ExpenseLedgerEditorTest {
     @get:Rule val compose = createComposeRule()
     private var committed: String? = null

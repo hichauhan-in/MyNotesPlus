@@ -148,6 +148,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import coil.compose.AsyncImage
+import com.example.data.attachments.AttachmentStore
 import com.example.data.attachments.EncAttachment
 import com.example.data.export.ExportFormat
 import com.example.data.export.ExportIO

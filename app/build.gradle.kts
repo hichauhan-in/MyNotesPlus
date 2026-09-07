@@ -14,9 +14,9 @@ android {
     applicationId = "in.hichauhan.mynotes"
     minSdk = 24
     targetSdk = 36
-    versionCode = 9
-    versionName = "1.9.0.0"
-    buildConfigField("boolean", "EXTERNAL_SUPPORT_ENABLED", "false")
+    versionCode = 10
+    versionName = "2.1.0.0"
+    buildConfigField("boolean", "EXTERNAL_SUPPORT_ENABLED", "true")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

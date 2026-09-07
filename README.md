@@ -178,7 +178,8 @@ An offline in-app policy alone does not satisfy the public policy URL requiremen
 
 Remaining work includes attachment and book sync, scheduled backups, wider device
 coverage for the beta on-device AI stack, and signed-release/device validation. External contribution buttons
-default to off through `EXTERNAL_SUPPORT_ENABLED`; review billing/program eligibility before enabling them.
+are enabled through `EXTERNAL_SUPPORT_ENABLED`, with the existing voluntary-support disclaimer and no
+paid benefits. Review payment routes against Google Play's direct-tip requirements before publishing.
 
 See [Daily-use update](docs/DAILY_USE_UPDATE.md) for this change set, verification commands and remaining release gates.
 

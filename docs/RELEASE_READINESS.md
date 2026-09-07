@@ -26,7 +26,7 @@ the original review environment, not the current verification capability.
 - Saves are ordered, failed saves remain retryable, and Trash waits for pending saves. Attachment writes are atomic. Unexpected database upgrades no longer silently wipe the database.
 - App lock fails closed, does not restore an unlocked state after process death, and protects screenshots, recents and reminder text. Authentication uses a supported authenticator combination on older Android versions.
 - Encrypted imports validate size and attachment references, use fresh filenames, and wait for persistence before reporting success. New shares require a 12-character passphrase; old shares remain readable.
-- Public links require confirmation and are unavailable for expense trackers. Unused Firebase AI/App Check dependencies are removed. External contribution UI defaults off.
+- Public links require confirmation and are unavailable for expense trackers. Unused Firebase AI/App Check dependencies are removed. Voluntary contribution UI is enabled with its existing no-benefits/no-obligation disclaimer.
 - Settings contains the bundled privacy policy and data controls. The hosted and bundled policy use the same HTML source and disclose Google SDK diagnostics, local metadata, temporary files, sync limits and deletion paths.
 
 ## Migration Precautions
@@ -89,7 +89,7 @@ Run the matching tasks through the configured Android Studio or host build envir
 4. Complete audience, content-rating, app-access and data-deletion questions. The app has no separately hosted MyNotes account; Drive is authorization to an existing Google account. Review Google's account definition against the actual sign-in experience rather than assuming an exemption.
 5. Review the merged manifest, not just the source manifest. Explain microphone, notifications and optional exact alarms. Check current target-API and native page-size requirements for the submission date.
 6. Finish the Google OAuth consent/production setup and register the actual installed signing certificates. Restrict authorization to the required drive.file and drive.appdata scopes and complete any verification requested by Google.
-7. Keep EXTERNAL_SUPPORT_ENABLED false unless the exact contribution flow and distribution regions have been reviewed against the current Payments policy and any required program enrollment. A "voluntary" label is not a substitute for that review.
+7. Review the enabled voluntary contribution routes against Google's direct-tip guidance: 100% of the contribution must go to the creator and it must grant no digital content, services or perks. Keep the explicit no-benefits/no-obligation disclaimer. Verify the actual provider arrangements before publishing; the disclaimer alone does not establish eligibility.
 8. Run Play's pre-launch report and internal testing with the signed release artifact. Resolve crashes, ANRs, accessibility findings, SDK warnings and privacy/disclosure mismatches before requesting production approval.
 
 ## Known Limits

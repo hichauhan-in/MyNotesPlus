@@ -2277,8 +2277,6 @@ private fun BuyCoffeeSheet(onDismiss: () -> Unit) {
                     }
                 },
             )
-            Spacer(Modifier.height(12.dp))
-            CoffeeOption(Icons.Rounded.Shop, "Playto", "Support on Playto")
 
             Spacer(Modifier.height(20.dp))
             Text(

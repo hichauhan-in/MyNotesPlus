@@ -44,6 +44,8 @@ class VoluntarySupportTest {
         compose.onNodeWithContentDescription("Buy me a coffee").assertIsDisplayed().performClick()
         compose.onNodeWithText("UPI").assertIsDisplayed()
         compose.onNodeWithText("Ko-fi").assertIsDisplayed()
+        compose.onNodeWithText("Playto").assertDoesNotExist()
+        compose.onNodeWithText("Coming soon").assertDoesNotExist()
         compose.onNodeWithText(
             "A voluntary, friendly gesture, nothing more. It does not " +
                 "unlock any features, remove any limits, or change how the app works. " +

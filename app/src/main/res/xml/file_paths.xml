@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- App-private storage for note image attachments (OS file-based encrypted). -->
+    <files-path
+        name="attachments"
+        path="attachments/" />
+    <!-- Temporary exported copies handed to other apps via the share sheet. -->
+    <cache-path
+        name="shared_exports"
+        path="shared/" />
+</paths>

@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/stats_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/widget_bg"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/app_name"
+        android:textColor="#B7ADFF"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:paddingStart="2dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal"
+        android:gravity="bottom"
+        android:baselineAligned="false">
+
+        <TextView
+            android:id="@+id/stats_count"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0"
+            android:textColor="#FFFFFF"
+            android:textSize="34sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/widget_stats_notes"
+            android:textColor="#9A9AA8"
+            android:textSize="13sp"
+            android:paddingStart="6dp"
+            android:paddingBottom="7dp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingTop="6dp">
+
+        <ImageView
+            android:id="@+id/stats_sync_icon"
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@drawable/ic_widget_sync"
+            android:contentDescription="@string/widget_stats_status_desc" />
+
+        <TextView
+            android:id="@+id/stats_status"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/widget_stats_syncoff"
+            android:textColor="#9A9AA8"
+            android:textSize="12sp"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:paddingStart="6dp" />
+    </LinearLayout>
+</LinearLayout>

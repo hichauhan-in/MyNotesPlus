@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   Auto Backup rules for Android 11 and older. The encrypted note database, its attachments, and
+   the settings store (which holds user-created template content) are excluded: the database's
+   encryption key lives in the device Keystore and cannot be restored onto another device, and
+   template content is user data we keep on-device only. A restore therefore starts empty rather
+   than bringing back notes that can no longer be decrypted.
+-->
+<full-backup-content>
+    <exclude domain="database" path="vault_notes_db" />
+    <exclude domain="database" path="vault_notes_db-wal" />
+    <exclude domain="database" path="vault_notes_db-shm" />
+    <exclude domain="database" path="vault_notes_db-journal" />
+    <exclude domain="file" path="attachments/" />
+    <exclude domain="file" path="datastore/" />
+</full-backup-content>

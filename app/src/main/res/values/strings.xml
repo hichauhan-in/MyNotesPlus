@@ -1,0 +1,26 @@
+<resources>
+    <string name="app_name">MyNotes+</string>
+    <string name="app_tagline">Private. Encrypted. Yours.</string>
+
+    <!-- Home-screen widgets -->
+    <string name="widget_quick_create_title">Create</string>
+    <string name="widget_quick_create_desc">Quick buttons to create a note, checklist, expense or board.</string>
+    <string name="widget_action_note">Note</string>
+    <string name="widget_action_checklist">Checklist</string>
+    <string name="widget_action_expense">Expense</string>
+    <string name="widget_action_board">Board</string>
+    <string name="widget_capture_label">New note</string>
+    <string name="widget_capture_desc">One tap to jot down a new note.</string>
+    <string name="widget_stats_desc">Your note count and backup status at a glance.</string>
+    <string name="widget_stats_notes">notes</string>
+    <string name="widget_stats_status_desc">Backup status</string>
+    <string name="widget_stats_syncoff">Backup off</string>
+    <string name="widget_stats_synced">Backed up</string>
+    <string name="widget_stats_notbacked">Not backed up yet</string>
+
+    <string name="widget_reminders_title">Reminders</string>
+    <string name="widget_reminders_desc">See your upcoming reminders and add new ones.</string>
+    <string name="widget_reminders_add">Add reminder</string>
+    <string name="widget_reminders_empty">No upcoming reminders</string>
+</resources>
+

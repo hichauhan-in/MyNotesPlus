@@ -1,0 +1,6 @@
+{
+  "name": "MyNotes",
+  "description": "An offline-first, privacy-first, encrypted note-taking app where every note is encrypted at rest. Optional end-to-end encrypted cloud backup.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

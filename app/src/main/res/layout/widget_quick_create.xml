@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/widget_bg"
+    android:padding="14dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/widget_quick_create_title"
+        android:textColor="#B7ADFF"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.02"
+        android:paddingStart="4dp"
+        android:paddingBottom="10dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal"
+        android:weightSum="4"
+        android:baselineAligned="false">
+
+        <LinearLayout
+            android:id="@+id/btn_note"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/widget_btn_bg"
+            android:paddingVertical="10dp">
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_widget_note"
+                android:contentDescription="@string/widget_action_note" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_action_note"
+                android:textColor="#EDEDF2"
+                android:textSize="11sp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:paddingTop="6dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btn_checklist"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/widget_btn_bg"
+            android:paddingVertical="10dp">
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_widget_checklist"
+                android:contentDescription="@string/widget_action_checklist" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_action_checklist"
+                android:textColor="#EDEDF2"
+                android:textSize="11sp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:paddingTop="6dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btn_expense"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/widget_btn_bg"
+            android:paddingVertical="10dp">
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_widget_expense"
+                android:contentDescription="@string/widget_action_expense" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_action_expense"
+                android:textColor="#EDEDF2"
+                android:textSize="11sp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:paddingTop="6dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/btn_board"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/widget_btn_bg"
+            android:paddingVertical="10dp">
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:src="@drawable/ic_widget_board"
+                android:contentDescription="@string/widget_action_board" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/widget_action_board"
+                android:textColor="#EDEDF2"
+                android:textSize="11sp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:paddingTop="6dp" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

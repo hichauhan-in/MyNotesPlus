@@ -22,7 +22,7 @@ private val Context.settingsDataStore: DataStore<Preferences> by
 
 /** How typed text and full-page pen drawings share space in a note. */
 enum class PageInkTextMode {
-    /** Reserve space so new text always flows *below* your drawings - they never overlap. */
+    /** Ink can cover earlier text; further typing stays in a separate area below the ink. */
     BELOW,
     /** Draw anywhere over the note; typing stays wherever the cursor is (drawings float on top). */
     FREE,

@@ -55,7 +55,6 @@ import androidx.compose.material.icons.rounded.DragIndicator
 import androidx.compose.material.icons.rounded.Draw
 import androidx.compose.material.icons.rounded.PanTool
 import androidx.compose.material.icons.rounded.TextFields
-import androidx.compose.material.icons.rounded.Undo
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -723,12 +722,6 @@ internal fun ScribbleEditor(
                     onRecognize = { recognizeBoardToText() },
                     onZoomIn = { zoomBy(1.25f) },
                     onZoomOut = { zoomBy(0.8f) },
-                    onUndo = {
-                        when {
-                            model.strokes.isNotEmpty() -> update(model.copy(strokes = model.strokes.dropLast(1)))
-                            model.shapes.isNotEmpty() -> update(model.copy(shapes = model.shapes.dropLast(1)))
-                        }
-                    },
                     onClear = {
                         if (model.strokes.isNotEmpty() || model.shapes.isNotEmpty() || model.images.isNotEmpty() || model.texts.isNotEmpty()) {
                             update(model.copy(strokes = emptyList(), shapes = emptyList(), images = emptyList(), texts = emptyList()))
@@ -977,7 +970,6 @@ private fun WbToolbar(
     onRecognize: () -> Unit,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
-    onUndo: () -> Unit,
     onClear: () -> Unit,
     onResetView: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1017,7 +1009,6 @@ private fun WbToolbar(
         WbToolButton(Icons.Rounded.Add, "Zoom in", selected = false, onClick = onZoomIn)
         WbToolButton(Icons.Rounded.CenterFocusStrong, "Reset view", selected = false, onClick = onResetView)
         WbDivider()
-        WbToolButton(Icons.Rounded.Undo, "Undo", selected = false, onClick = onUndo)
         WbToolButton(Icons.Rounded.DeleteSweep, "Clear", selected = false, onClick = onClear)
     }
 }

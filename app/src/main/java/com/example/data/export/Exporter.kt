@@ -51,11 +51,14 @@ object Exporter {
     // ---- Public API -------------------------------------------------------------
 
     /** The bytes of [note] rendered in [format]. */
-    fun noteBytes(note: Note, format: ExportFormat): ByteArray = when (format) {
-        ExportFormat.TXT -> plainDoc(note).toByteArray(Charsets.UTF_8)
-        ExportFormat.MD -> markdownDoc(note).toByteArray(Charsets.UTF_8)
-        ExportFormat.HTML -> htmlDoc(note).toByteArray(Charsets.UTF_8)
-        ExportFormat.PDF -> pdfBytes(note)
+    fun noteBytes(note: Note, format: ExportFormat): ByteArray {
+        val readable = note.copy(content = com.example.domain.model.InkTextLayout.strip(note.content))
+        return when (format) {
+            ExportFormat.TXT -> plainDoc(readable).toByteArray(Charsets.UTF_8)
+            ExportFormat.MD -> markdownDoc(readable).toByteArray(Charsets.UTF_8)
+            ExportFormat.HTML -> htmlDoc(readable).toByteArray(Charsets.UTF_8)
+            ExportFormat.PDF -> pdfBytes(readable)
+        }
     }
 
     /** A filesystem-safe base file name (no extension) for [note]. */

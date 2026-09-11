@@ -19,6 +19,6 @@ internal object TextImportPolicy {
         require(!text.contains('\u0000')) { "This is not a text document" }
         return text.replace("\r\n", "\n").replace('\r', '\n')
             .replace("attachment://", "external-attachment:", ignoreCase = true)
-            .replace(Regex("\\[\\[(table|callout|scribble|ink):", RegexOption.IGNORE_CASE), "[$1:")
+            .replace(Regex("\\[\\[(table|callout|scribble|ink|inkspace):", RegexOption.IGNORE_CASE), "[$1:")
     }
 }

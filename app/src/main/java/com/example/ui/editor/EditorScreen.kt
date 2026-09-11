@@ -147,6 +147,9 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
@@ -170,8 +173,8 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -212,6 +215,7 @@ import com.example.data.ml.SmartText
 import com.example.data.ml.TextExtractor
 import com.example.data.share.NoteSharing
 import com.example.data.settings.PageInkTextMode
+import com.example.domain.model.InkTextLayout
 import com.example.data.sync.DriveAuth
 import com.example.data.sync.DriveShare
 import com.google.android.gms.auth.api.identity.Identity
@@ -316,10 +320,9 @@ fun EditorScreen(
     var penColor by remember { mutableStateOf(0) }
     var penWidthDp by remember { mutableStateOf(4f) }
     var cropImageBlock by remember { mutableStateOf<ImageBlock?>(null) }
-    // Page-ink "write below the drawing": measured height of the text above the drawing, used to
-    // place the trailing writing line beneath the lowest ink stroke so typing never lands on it.
     val inkDensity = LocalDensity.current
-    var inkUpperHeightPx by remember { mutableStateOf(0) }
+    val inkScroll = rememberScrollState()
+    var inkOriginY by remember { mutableStateOf(0f) }
     val inkProtectedBounds = remember(state.id) {
         androidx.compose.runtime.mutableStateMapOf<String, androidx.compose.ui.geometry.Rect>()
     }
@@ -335,9 +338,33 @@ fun EditorScreen(
         if (immediate) viewModel.commitContentNow(text) else viewModel.onContentChanged(text)
     }
 
+    fun canWriteText(index: Int): Boolean {
+        if (pageDrawMode) return false
+        if (pageInkTextMode == PageInkTextMode.FREE || inkStrokes.isEmpty()) return true
+        val boundary = blocks.indexOfLast { it is InkSpaceBlock }
+        return boundary >= 0 && index > boundary
+    }
+
+    fun reserveWritingArea() {
+        if (inkStrokes.isEmpty()) return
+        val minimumTop = InkTextLayout.belowInk(pageInkBottomDp(inkStrokes))
+        val last = blocks.lastOrNull()
+        if (last is TextBlock && last.value.text.isEmpty()) {
+            val spaceIndex = blocks.lastIndex - 1
+            val space = blocks.getOrNull(spaceIndex) as? InkSpaceBlock
+            if (space != null) blocks[spaceIndex] = space.copy(minimumTopDp = maxOf(space.minimumTopDp, minimumTop))
+            else blocks.add(blocks.lastIndex, InkSpaceBlock(newBlockId(), minimumTop))
+        } else {
+            blocks.add(InkSpaceBlock(newBlockId(), minimumTop))
+            blocks.add(TextBlock(newBlockId(), TextFieldValue("")))
+        }
+    }
+
     fun onTextBlockChange(id: String, value: TextFieldValue) {
         val idx = blocks.indexOfFirst { it.id == id }
         if (idx >= 0 && blocks[idx] is TextBlock) {
+            val current = blocks[idx] as TextBlock
+            if (value.text != current.value.text && !canWriteText(idx)) return
             blocks[idx] = TextBlock(id, value)
             pushBlocks(immediate = false)
         }
@@ -345,8 +372,8 @@ fun EditorScreen(
 
     fun editFocusedBlock(transform: (TextFieldValue) -> TextFieldValue) {
         val focused = blocks.indexOfFirst { it.id == focusedBlockId }
-        val idx = if (focused >= 0 && blocks[focused] is TextBlock) focused
-        else blocks.indexOfLast { it is TextBlock }
+        val idx = if (focused >= 0 && blocks[focused] is TextBlock && canWriteText(focused)) focused
+        else blocks.indices.lastOrNull { blocks[it] is TextBlock && canWriteText(it) } ?: -1
         if (idx >= 0) {
             val tb = blocks[idx] as TextBlock
             blocks[idx] = TextBlock(tb.id, transform(tb.value))
@@ -422,7 +449,9 @@ fun EditorScreen(
     // When focusTrailing is set (tables/checklists), the caret jumps to the empty text line just
     // below the inserted block instead of staying in the block above it.
     fun insertBlockAtCursor(media: EditorBlock, focusTrailing: Boolean = false) {
-        val idx = blocks.indexOfFirst { it.id == focusedBlockId }
+        val focused = blocks.indexOfFirst { it.id == focusedBlockId }
+        val idx = if (focused >= 0 && canWriteText(focused)) focused
+        else blocks.indices.lastOrNull { blocks[it] is TextBlock && canWriteText(it) } ?: -1
         val trailingId = newBlockId()
         if (idx >= 0 && blocks[idx] is TextBlock) {
             val tb = blocks[idx] as TextBlock
@@ -915,16 +944,23 @@ fun EditorScreen(
 
     BackHandler { leave() }
 
+    Box(Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(MaterialTheme.colorScheme.background)
+            .then(if (showFind) Modifier.clearAndSetSemantics {} else Modifier),
     ) {
         EditorTopBar(
             saveStatus = state.saveStatus,
             onRetrySave = viewModel::flush,
             templateMode = state.templateMode,
             editing = editing,
+            showUndoRedo = state.type != NoteType.EXPENSE,
+            canUndo = state.canUndo,
+            canRedo = state.canRedo,
+            onUndo = viewModel::undo,
+            onRedo = viewModel::redo,
             onBack = { leave() },
             onToggleEdit = {
                 if (editing) {
@@ -935,6 +971,10 @@ fun EditorScreen(
                 editing = !editing
             },
             onShare = { showShareSheet = true },
+            onSearch = { focusManager.clearFocus(force = true); viewModel.flush(); pageDrawMode = false; showFind = true },
+            onVersions = if (noteId != null || state.saveStatus == SaveStatus.Saved) {
+                { viewModel.loadVersions(); showHistory = true }
+            } else null,
             onExport = { showExportSheet = true },
             onRemind = { showReminderSheet = true },
             onSummarize = if (aiSummaryAvailable) ({ summarizeNote() }) else null,
@@ -943,28 +983,6 @@ fun EditorScreen(
                 viewModel.deleteToTrash { onNavigateBack() }
             },
         )
-
-        if (!state.templateMode && (editing || noteId != null)) {
-            EditorSearchRow(
-                onSearch = { showFind = true },
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                actions = if ((editing && state.type != NoteType.EXPENSE) || noteId != null) {
-                    {
-                        if (editing && state.type != NoteType.EXPENSE) {
-                            androidx.compose.material3.IconButton(onClick = viewModel::undo, enabled = state.canUndo) {
-                                Icon(Icons.Rounded.Undo, "Undo edit")
-                            }
-                            androidx.compose.material3.IconButton(onClick = viewModel::redo, enabled = state.canRedo) {
-                                Icon(Icons.Rounded.Redo, "Redo edit")
-                            }
-                        }
-                        if (noteId != null) androidx.compose.material3.IconButton(onClick = { viewModel.loadVersions(); showHistory = true }) {
-                            Icon(Icons.Rounded.History, "Recent versions")
-                        }
-                    }
-                } else null,
-            )
-        }
 
         CompositionLocalProvider(LocalReadOnly provides !editing) {
         val metaBar: @Composable () -> Unit = {
@@ -1050,7 +1068,7 @@ fun EditorScreen(
         val renderTextBlock: @Composable (Int, EditorBlock) -> Unit = { index, block ->
             Column(
                 modifier = Modifier.fillMaxWidth().then(
-                    if (block is TextBlock) Modifier else Modifier.onGloballyPositioned {
+                    if (block is TextBlock || block is InkSpaceBlock) Modifier else Modifier.onGloballyPositioned {
                         inkProtectedBounds[block.id] = it.boundsInRoot()
                     },
                 ),
@@ -1063,8 +1081,12 @@ fun EditorScreen(
                     requestFocus = block.id == pendingFocusBlockId,
                     onFocusHandled = { if (pendingFocusBlockId == block.id) pendingFocusBlockId = null },
                     onValueChange = { onTextBlockChange(block.id, it) },
-                    onFocused = { focusedBlockId = block.id },
+                    onFocused = { if (canWriteText(index)) focusedBlockId = block.id else if (editing && !pageDrawMode) focusEndOfNote() },
+                    inkReadOnly = !canWriteText(index),
+                    continuation = pageInkTextMode == PageInkTextMode.BELOW && inkStrokes.isNotEmpty() && canWriteText(index),
                 )
+
+                is InkSpaceBlock -> if (inkStrokes.isNotEmpty()) InkWritingSpace(block.minimumTopDp, inkOriginY, inkScroll)
 
                 is ImageBlock -> {
                     ResizableAttachmentImage(
@@ -1128,14 +1150,12 @@ fun EditorScreen(
             }
         }
 
-        // In "write below the drawing" mode, make sure the note ends in a text line to write on once
-        // a page drawing exists (append one if it currently ends in a non-text block).
-        LaunchedEffect(pageInkTextMode, inkStrokes.isEmpty(), editing, blocks.lastOrNull()?.let { it::class }) {
-            if (editing && pageInkTextMode == PageInkTextMode.BELOW && inkStrokes.isNotEmpty() &&
-                (blocks.isEmpty() || blocks.last() !is TextBlock)
-            ) {
-                blocks.add(TextBlock(newBlockId(), TextFieldValue("")))
-                pushBlocks(immediate = false)
+        LaunchedEffect(pageInkTextMode, bodyReady, state.id, state.bodyGeneration) {
+            if (bodyReady && pageInkTextMode == PageInkTextMode.BELOW && inkStrokes.isNotEmpty()) {
+                val boundary = blocks.lastOrNull { it is InkSpaceBlock } as? InkSpaceBlock
+                if (boundary == null || boundary.minimumTopDp < InkTextLayout.belowInk(pageInkBottomDp(inkStrokes))) {
+                    reserveWritingArea()
+                }
             }
         }
 
@@ -1258,10 +1278,6 @@ fun EditorScreen(
                         .weight(1f)
                         .fillMaxWidth(),
                 ) {
-                    val inkScroll = rememberScrollState()
-                    // "Write below the drawing" reserves space so the trailing text line sits beneath
-                    // the lowest ink stroke; "Free overlay" keeps the classic behaviour.
-                    val writeBelow = pageInkTextMode == PageInkTextMode.BELOW && inkStrokes.isNotEmpty()
                     PageInkLayer(
                         strokes = inkStrokes,
                         drawEnabled = pageDrawMode && editing,
@@ -1269,10 +1285,12 @@ fun EditorScreen(
                         penWidthDp = penWidthDp,
                         scrollState = inkScroll,
                         protectedBounds = listOfNotNull(inkProtectedBounds["header"]) +
-                            blocks.filterNot { it is TextBlock }.mapNotNull { inkProtectedBounds[it.id] },
+                            blocks.filterNot { it is TextBlock || it is InkSpaceBlock }.mapNotNull { inkProtectedBounds[it.id] },
                         horizontalInsetPx = with(inkDensity) { contentSidePadding.toPx() },
+                        modifier = Modifier.onGloballyPositioned { inkOriginY = it.positionInRoot().y },
                         onCommitStroke = {
                             inkStrokes.add(it)
+                            if (pageInkTextMode == PageInkTextMode.BELOW) reserveWritingArea()
                             pushBlocks(immediate = true)
                         },
                     ) {
@@ -1282,28 +1300,11 @@ fun EditorScreen(
                             .verticalScroll(inkScroll)
                             .padding(horizontal = contentSidePadding),
                     ) {
-                        if (writeBelow) {
-                            Column(modifier = Modifier.onSizeChanged { inkUpperHeightPx = it.height }) {
-                                editorHeaderContent()
-                                blocks.forEachIndexed { index, block ->
-                                    if (index < blocks.lastIndex) key(block.id) { renderTextBlock(index, block) }
-                                }
-                            }
-                            // Push the trailing writing line down to just below the lowest stroke.
-                            val inkBottomPx = with(inkDensity) { (pageInkBottomDp(inkStrokes) + 16f).dp.toPx() }
-                            val gapPx = (inkBottomPx - inkUpperHeightPx).coerceAtLeast(0f)
-                            Spacer(Modifier.height(with(inkDensity) { gapPx.toDp() }))
-                            blocks.lastOrNull()?.let { last ->
-                                key(last.id) { renderTextBlock(blocks.lastIndex, last) }
-                            }
-                            Spacer(Modifier.height(140.dp))
-                        } else {
-                            editorHeaderContent()
-                            blocks.forEachIndexed { index, block ->
-                                key(block.id) { renderTextBlock(index, block) }
-                            }
-                            Spacer(Modifier.height(24.dp))
+                        editorHeaderContent()
+                        blocks.forEachIndexed { index, block ->
+                            key(block.id) { renderTextBlock(index, block) }
                         }
+                        Spacer(Modifier.height(140.dp))
                     }
                     }
                 }
@@ -1339,6 +1340,9 @@ fun EditorScreen(
                     onClear = {
                         if (inkStrokes.isNotEmpty()) {
                             inkStrokes.clear()
+                            val withoutSpaces = parseContentToBlocks(serializeBlocks(blocks.filterNot { it is InkSpaceBlock }))
+                            blocks.clear()
+                            blocks.addAll(withoutSpaces)
                             pushBlocks(immediate = true)
                         }
                     },
@@ -1389,8 +1393,10 @@ fun EditorScreen(
         }
     }
 
-    if (showHistory) NoteHistorySheet(viewModel, onDismiss = { showHistory = false })
     if (showFind) FindInNote(state.content, state.type.name, onDismiss = { showFind = false })
+    }
+
+    if (showHistory) NoteHistorySheet(viewModel, onDismiss = { showHistory = false })
 
     if (showColorSheet) {
         ColorPickerSheet(
@@ -1560,14 +1566,21 @@ fun EditorScreen(
 }
 
 @Composable
-private fun EditorTopBar(
+internal fun EditorTopBar(
     saveStatus: SaveStatus,
     onRetrySave: () -> Unit,
     templateMode: Boolean,
     editing: Boolean,
+    showUndoRedo: Boolean = true,
+    canUndo: Boolean = false,
+    canRedo: Boolean = false,
+    onUndo: () -> Unit = {},
+    onRedo: () -> Unit = {},
     onBack: () -> Unit,
     onToggleEdit: () -> Unit,
     onShare: () -> Unit,
+    onSearch: () -> Unit,
+    onVersions: (() -> Unit)? = null,
     onExport: () -> Unit,
     onRemind: () -> Unit,
     onSummarize: (() -> Unit)? = null,
@@ -1577,7 +1590,7 @@ private fun EditorTopBar(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         NeuIconButton(
@@ -1586,7 +1599,7 @@ private fun EditorTopBar(
             onClick = onBack,
             size = 44.dp,
         )
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(4.dp))
         if (templateMode) {
             Text(
                 text = "Template",
@@ -1596,10 +1609,27 @@ private fun EditorTopBar(
             )
             Spacer(Modifier.weight(1f))
         } else {
-            if (saveStatus == SaveStatus.Error) {
-                TextButton(onClick = onRetrySave) { Text("Retry save", color = MaterialTheme.colorScheme.error) }
-            } else SaveStatusPill(saveStatus)
-            Spacer(Modifier.weight(1f))
+            BoxWithConstraints(Modifier.weight(1f).padding(end = 4.dp)) {
+                if (saveStatus == SaveStatus.Error) {
+                    TextButton(onClick = onRetrySave) { Text("Retry", color = MaterialTheme.colorScheme.error) }
+                } else if (maxWidth >= 80.dp) SaveStatusPill(saveStatus)
+                else Text(
+                    text = when (saveStatus) {
+                        SaveStatus.Saved -> "Saved"
+                        SaveStatus.Saving -> "Saving"
+                        SaveStatus.Editing -> "Editing"
+                        else -> ""
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (editing && showUndoRedo) {
+                androidx.compose.material3.IconButton(onClick = onUndo, enabled = canUndo) { Icon(Icons.Rounded.Undo, "Undo edit") }
+                androidx.compose.material3.IconButton(onClick = onRedo, enabled = canRedo) { Icon(Icons.Rounded.Redo, "Redo edit") }
+            }
             NeuIconButton(
                 icon = if (editing) Icons.Rounded.Check else Icons.Rounded.Edit,
                 contentDescription = if (editing) "Done editing" else "Edit",
@@ -1607,8 +1637,8 @@ private fun EditorTopBar(
                 size = 44.dp,
                 tint = if (editing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.width(10.dp))
-            EditorOverflowMenu(onShare = onShare, onExport = onExport, onRemind = onRemind, onSummarize = onSummarize, onDelete = onDelete)
+            Spacer(Modifier.width(4.dp))
+            EditorOverflowMenu(onShare = onShare, onSearch = onSearch, onVersions = onVersions, onExport = onExport, onRemind = onRemind, onSummarize = onSummarize, onDelete = onDelete)
         }
     }
 }
@@ -1617,6 +1647,8 @@ private fun EditorTopBar(
 @Composable
 private fun EditorOverflowMenu(
     onShare: () -> Unit,
+    onSearch: () -> Unit,
+    onVersions: (() -> Unit)?,
     onExport: () -> Unit,
     onRemind: () -> Unit,
     onSummarize: (() -> Unit)? = null,
@@ -1669,6 +1701,8 @@ private fun EditorOverflowMenu(
                         transformOrigin = TransformOrigin(1f, 0f)
                     },
                     onShare = { open = false; onShare() },
+                    onSearch = { open = false; onSearch() },
+                    onVersions = onVersions?.let { action -> { open = false; action() } },
                     onExport = { open = false; onExport() },
                     onRemind = { open = false; onRemind() },
                     onSummarize = onSummarize?.let { cb -> { open = false; cb() } },
@@ -1684,6 +1718,8 @@ private fun EditorOverflowMenu(
 private fun OverflowMenuCard(
     modifier: Modifier = Modifier,
     onShare: () -> Unit,
+    onSearch: () -> Unit,
+    onVersions: (() -> Unit)?,
     onExport: () -> Unit,
     onRemind: () -> Unit,
     onSummarize: (() -> Unit)? = null,
@@ -1721,6 +1757,16 @@ private fun OverflowMenuCard(
                     onClick = onSummarize,
                 )
             }
+            if (onVersions != null) OverflowMenuRow(
+                icon = Icons.Rounded.History,
+                label = "Recent versions",
+                onClick = onVersions,
+            )
+            OverflowMenuRow(
+                icon = Icons.Rounded.Search,
+                label = "Search",
+                onClick = onSearch,
+            )
             OverflowMenuRow(
                 icon = Icons.Rounded.FileDownload,
                 label = "Export",
@@ -2760,6 +2806,8 @@ private fun EditorTextBlock(
     onFocusHandled: () -> Unit,
     onValueChange: (TextFieldValue) -> Unit,
     onFocused: () -> Unit,
+    inkReadOnly: Boolean = false,
+    continuation: Boolean = false,
 ) {
     val markerColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
     val highlightColor = MaterialTheme.colorScheme.tertiaryContainer
@@ -2781,7 +2829,7 @@ private fun EditorTextBlock(
         ),
         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
         visualTransformation = transformation,
-        readOnly = LocalReadOnly.current,
+        readOnly = LocalReadOnly.current || inkReadOnly,
         decorationBox = { inner ->
             if (showHint) {
                 Text(
@@ -2794,6 +2842,7 @@ private fun EditorTextBlock(
         },
         modifier = Modifier
             .fillMaxWidth()
+            .semantics { contentDescription = if (continuation) "Continue below ink" else "Note text" }
             .heightIn(min = if (isLast) 220.dp else 44.dp)
             .focusRequester(focusRequester)
             .onFocusChanged { if (it.isFocused) onFocused() },
@@ -3896,6 +3945,8 @@ private sealed interface EditorBlock {
 
 private data class TextBlock(override val id: String, val value: TextFieldValue) : EditorBlock
 
+private data class InkSpaceBlock(override val id: String, val minimumTopDp: Int) : EditorBlock
+
 private data class ImageBlock(
     override val id: String,
     val fileName: String,
@@ -3956,7 +4007,12 @@ private fun parseContentToBlocks(content: String): List<EditorBlock> {
         val calloutMatch = CALLOUT_LINE.matchEntire(line.trim())
         val scribbleMatch = SCRIBBLE_LINE.matchEntire(line.trim())
         val checkMatch = CHECKLIST_LINE.matchEntire(line)
+        val inkSpace = InkTextLayout.decode(line)
         when {
+            inkSpace != null -> {
+                flushChecklist(); flushText()
+                result.add(InkSpaceBlock(newBlockId(), inkSpace))
+            }
             ref != null -> {
                 flushChecklist(); flushText()
                 if (ref.kind == AttachmentKind.AUDIO) result.add(AudioBlock(newBlockId(), ref.fileName))
@@ -4004,6 +4060,7 @@ private fun serializeBlocks(blocks: List<EditorBlock>): String =
     blocks.joinToString("\n") { block ->
         when (block) {
             is TextBlock -> block.value.text
+            is InkSpaceBlock -> InkTextLayout.encode(block.minimumTopDp)
             is ImageBlock -> AttachmentMarkup.imageToken(block.fileName, block.widthPercent)
             is AudioBlock -> AttachmentMarkup.audioToken(block.fileName)
             is ChecklistBlock -> block.items.joinToString("\n") { item ->

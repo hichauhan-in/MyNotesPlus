@@ -38,6 +38,8 @@ $java = Get-ChildItem (Join-Path $ToolchainRoot 'java') -Filter java.exe -Recurs
 if (-not $java) { throw 'Run with -InstallToolchain to prepare a temporary Java/Kotlin test environment.' }
 $classpath = "$ToolchainRoot\kotlinc\lib\kotlin-stdlib.jar;$ToolchainRoot\junit.jar;$ToolchainRoot\hamcrest.jar;$ToolchainRoot\json.jar"
 $sources = @(
+    'app/src/main/java/com/example/domain/model/InkTextLayout.kt',
+    'app/src/test/java/com/example/domain/model/InkTextLayoutTest.kt',
     'app/src/main/java/com/example/domain/model/Checklist.kt',
     'app/src/test/java/com/example/domain/model/ChecklistTest.kt',
     'app/src/main/java/com/example/domain/model/ReceiptDraft.kt',
@@ -68,6 +70,7 @@ $sources = @(
     'app/src/test/java/com/example/data/share/ShareImportPolicyTest.kt'
 )
 $suites = @(
+    'com.example.domain.model.InkTextLayoutTest',
     'com.example.domain.model.ChecklistTest',
     'com.example.domain.model.ReceiptParserTest',
     'com.example.domain.model.ReminderTimingTest',

@@ -73,6 +73,17 @@ import org.json.JSONObject
  *  content coordinates, so the ink stays put over the text regardless of screen density. */
 internal data class InkStroke(val color: Int, val width: Float, val points: List<Offset>)
 
+@Composable
+internal fun InkWritingSpace(minimumTopDp: Int, originY: Float, scrollState: ScrollState) {
+    val density = LocalDensity.current.density
+    var currentTopDp by remember(minimumTopDp, density) { mutableStateOf<Float?>(null) }
+    val gap = currentTopDp?.let { com.example.domain.model.InkTextLayout.gapBefore(minimumTopDp, it) } ?: 0f
+    Spacer(Modifier.fillMaxWidth().height(gap.dp).onGloballyPositioned { coordinates ->
+        val top = (coordinates.positionInRoot().y - originY + scrollState.value) / density
+        if (currentTopDp == null || kotlin.math.abs(top - (currentTopDp ?: top)) > 0.25f) currentTopDp = top
+    })
+}
+
 /**
  * Whole-note "page ink": the freehand layer a user can draw over the entire note, mixing with
  * typed text, images, tables and everything else. It is persisted as a single token appended to

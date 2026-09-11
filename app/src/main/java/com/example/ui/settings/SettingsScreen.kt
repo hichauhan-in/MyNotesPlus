@@ -438,9 +438,9 @@ fun SettingsScreen(
                         )
                         Text(
                             text = if (settings.pageInkTextMode == PageInkTextMode.BELOW)
-                                "New text flows below your page drawings"
+                                "Draw over existing text; continue typing below ink"
                             else
-                                "Drawings float over the note; type anywhere",
+                                "Text and drawings can overlap freely",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -717,7 +717,7 @@ private fun PageInkModeSelector(
     onSelect: (PageInkTextMode) -> Unit,
 ) {
     val options = listOf(
-        Triple(PageInkTextMode.BELOW, "Below drawing", Icons.Rounded.VerticalAlignBottom),
+        Triple(PageInkTextMode.BELOW, "Protect ink", Icons.Rounded.VerticalAlignBottom),
         Triple(PageInkTextMode.FREE, "Free overlay", Icons.Rounded.Layers),
     )
     Row(

@@ -1,5 +1,14 @@
 # Daily-use Update
 
+## Editor Refinements (11 September)
+
+- The always-visible search/history row is removed. Search is immediately above Export in the three-dot menu, and Recent versions is in the same menu.
+- Search opens an inline focused input at the top, with next/previous matches. The editor stays mounted underneath so closing search preserves its scroll position, edit mode and undo history.
+- Undo/redo are edit-only top-bar controls immediately before the edit/check button. The board's duplicate lower undo button is removed. Expense corrections still use the ledger's explicit reversal flow.
+- Normal-note drawing can overlay existing text without pushing that text down. Protect ink (the default) retains earlier text as read-only and gives subsequent typing a separate area below the strokes. Free overlay remains available under Settings > Additional configurations > Drawing & text when unrestricted text/ink overlap is wanted.
+- Below-ink writing positions are saved inside encrypted note content and survive reopen, undo/redo, encrypted sharing and backup. Internal layout markers are stripped from readable exports, previews and search. Update all devices to render these positions consistently; older clients do not understand the new layout marker.
+- Focused tests cover the menu order, search transitions, edit-only action placement, absence of lower board undo, repeated ink-over-text sessions, blank-space drawing, protected/free settings and save/reopen behavior.
+
 ## Reusable Expenses
 
 - Save salary, groceries, savings, investments and HDFC-to-SBI transfers once. Record applies the saved action to the current recorded balance without an execution confirmation dialog.

@@ -95,7 +95,7 @@ object AttachmentMarkup {
     }
 
     /** Content with attachment tokens removed - used for previews, word counts, etc. */
-    fun stripTokens(content: String): String = content
+    fun stripTokens(content: String): String = InkTextLayout.strip(content)
         .replace(TOKEN, " ")
         .replace(TABLE, " ")
         .replace(CALLOUT, " ")

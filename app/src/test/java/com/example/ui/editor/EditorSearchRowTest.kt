@@ -2,29 +2,21 @@ package com.example.ui.editor
 
 import android.app.Application
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Undo
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
-import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
@@ -32,7 +24,6 @@ import androidx.compose.ui.unit.dp
 import com.example.ui.theme.MyNotesTheme
 import com.example.ui.theme.ThemeMode
 import com.github.takahirom.roborazzi.captureRoboImage
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -47,94 +38,131 @@ import org.robolectric.annotation.GraphicsMode
 class EditorSearchRowTest {
     @get:Rule val compose = createComposeRule()
 
-    private fun show(
-        count: MutableState<Int> = mutableStateOf(0),
+    @Test fun boardExposesUndoAndRedoOnlyInTheTopToolbar() {
+        compose.setContent {
+            MyNotesTheme {
+                Surface {
+                    Column(Modifier.fillMaxSize()) {
+                        EditorTopBar(SaveStatus.Saved, {}, false, true, onBack = {}, onToggleEdit = {},
+                            onShare = {}, onSearch = {}, onVersions = {}, onExport = {}, onRemind = {}, onDelete = {})
+                        ScribbleEditor("board", "Board", "", {}, {}, modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+        compose.onNodeWithContentDescription("Undo edit").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Redo edit").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Undo").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Redo").assertDoesNotExist()
+        compose.onRoot().captureRoboImage("build/reports/daily-use/editor-board-clean-toolbar.png")
+    }
+
+    @Test fun readOnlyToolbarKeepsSearchAndVersionsInTheMenu() {
+        var searched = false
+        compose.setContent {
+            MyNotesTheme {
+                EditorTopBar(SaveStatus.Saved, {}, false, false, onBack = {}, onToggleEdit = {},
+                    onShare = {}, onSearch = { searched = true }, onVersions = {}, onExport = {}, onRemind = {}, onDelete = {})
+            }
+        }
+        compose.onNodeWithText("Find in note").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Undo edit").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Redo edit").assertDoesNotExist()
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Recent versions").assertIsDisplayed()
+        val search = compose.onNodeWithText("Search").fetchSemanticsNode().boundsInRoot
+        val export = compose.onNodeWithText("Export").fetchSemanticsNode().boundsInRoot
+        assertTrue(search.top < export.top && search.bottom <= export.top + 0.5f)
+        compose.onNodeWithText("Search").performClick()
+        compose.runOnIdle { assertTrue(searched) }
+    }
+
+    @Test fun undoAndRedoSitBeforeDoneOnlyInEditMode() {
+        val editing = mutableStateOf(true)
+        var undone = false
+        var redone = false
+        compose.setContent {
+            MyNotesTheme {
+                EditorTopBar(SaveStatus.Saved, {}, false, editing.value, canUndo = true, canRedo = true,
+                    onUndo = { undone = true }, onRedo = { redone = true }, onBack = {}, onToggleEdit = { editing.value = false },
+                    onShare = {}, onSearch = {}, onVersions = {}, onExport = {}, onRemind = {}, onDelete = {})
+            }
+        }
+        val undo = compose.onNodeWithContentDescription("Undo edit").fetchSemanticsNode().boundsInRoot
+        val redo = compose.onNodeWithContentDescription("Redo edit").fetchSemanticsNode().boundsInRoot
+        val done = compose.onNodeWithContentDescription("Done editing").fetchSemanticsNode().boundsInRoot
+        assertTrue(undo.right <= redo.left && redo.right <= done.left)
+        compose.onNodeWithContentDescription("Undo edit").performClick()
+        compose.onNodeWithContentDescription("Redo edit").performClick()
+        compose.runOnIdle { assertTrue(undone && redone) }
+        compose.onNodeWithContentDescription("Done editing").performClick()
+        compose.onNodeWithContentDescription("Undo edit").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Redo edit").assertDoesNotExist()
+    }
+
+    private fun showSearch(
         width: Dp = 328.dp,
         fontScale: Float = 1f,
         direction: LayoutDirection = LayoutDirection.Ltr,
-        onAction: (Int) -> Unit = {},
+        content: String = "A note to search\nA note to keep",
+        type: String = "TEXT",
     ) {
-        val searching = mutableStateOf(false)
+        val searching = mutableStateOf(true)
         compose.setContent {
             MyNotesTheme(themeMode = ThemeMode.LIGHT) {
                 CompositionLocalProvider(
                     LocalDensity provides Density(LocalDensity.current.density, fontScale),
                     LocalLayoutDirection provides direction,
                 ) {
-                    val actions: (@Composable RowScope.() -> Unit)? = if (count.value == 0) null else {
-                        {
-                            repeat(count.value) { index ->
-                                IconButton(onClick = { onAction(index) }) {
-                                    Icon(Icons.AutoMirrored.Rounded.Undo, "Action $index")
-                                }
-                            }
-                        }
-                    }
                     Surface {
                         Column(Modifier.width(width)) {
-                            EditorSearchRow(
-                                onSearch = { searching.value = true },
-                                modifier = Modifier.testTag("search-row"),
-                                actions = actions,
-                            )
+                            if (searching.value) FindInNote(content, type, onDismiss = { searching.value = false })
+                            else EditorTopBar(SaveStatus.Saved, {}, false, false, onBack = {}, onToggleEdit = {},
+                                onShare = {}, onSearch = { searching.value = true }, onVersions = {}, onExport = {}, onRemind = {}, onDelete = {})
                         }
                     }
-                    if (searching.value) FindInNote("A note to search", "TEXT", onDismiss = { searching.value = false })
                 }
             }
         }
     }
 
-    @Test fun searchBarFillsTheRowWhenThereAreNoActions() {
-        show()
-        val row = compose.onNodeWithTag("search-row").fetchSemanticsNode().boundsInRoot
-        val search = compose.onNodeWithText("Find in note").fetchSemanticsNode().boundsInRoot
-        assertEquals(row.left, search.left, 0.5f)
-        assertEquals(row.right, search.right, 0.5f)
-        compose.onRoot().captureRoboImage("build/reports/daily-use/editor-search-full-width.png")
+    @Test fun inlineSearchFindsMatchesAndClosingRestoresTheToolbar() {
+        showSearch()
+        compose.onNodeWithContentDescription("More options").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Find in note").performTextInput("note")
+        compose.onNodeWithText("1 of 2").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Next match").performClick()
+        compose.onNodeWithText("2 of 2").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Previous match").performClick()
+        compose.onNodeWithText("1 of 2").assertIsDisplayed()
+        compose.onRoot().captureRoboImage("build/reports/daily-use/editor-search-inline.png")
+        compose.onNodeWithContentDescription("Close search").performClick()
+        compose.onNodeWithContentDescription("Find in note").assertDoesNotExist()
+        compose.onNodeWithContentDescription("More options").assertIsDisplayed()
     }
 
-    @Test fun searchShrinksAndExpandsAsActionsChange() {
-        val count = mutableStateOf(0)
-        show(count)
-        val fullWidth = compose.onNodeWithText("Find in note").fetchSemanticsNode().boundsInRoot.width
-        compose.runOnIdle { count.value = 3 }
-        val search = compose.onNodeWithText("Find in note").fetchSemanticsNode().boundsInRoot
-        val first = compose.onNodeWithContentDescription("Action 0").fetchSemanticsNode().boundsInRoot
-        assertTrue(search.width < fullWidth)
-        assertTrue(search.right < first.left)
-        repeat(3) { compose.onNodeWithContentDescription("Action $it").assertIsDisplayed() }
-        compose.onRoot().captureRoboImage("build/reports/daily-use/editor-search-with-actions.png")
-        compose.runOnIdle { count.value = 1 }
-        assertTrue(compose.onNodeWithText("Find in note").fetchSemanticsNode().boundsInRoot.width > search.width)
-        compose.runOnIdle { count.value = 0 }
-        assertEquals(fullWidth, compose.onNodeWithText("Find in note").fetchSemanticsNode().boundsInRoot.width, 0.5f)
-    }
-
-    @Test fun extraActionsStayReachableWithoutCollapsingSearch() {
-        var clicked = -1
-        show(mutableStateOf(6), width = 288.dp, fontScale = 1.5f, onAction = { clicked = it })
-        val before = compose.onNodeWithText("Find in note").fetchSemanticsNode().boundsInRoot
-        val row = compose.onNodeWithTag("search-row").fetchSemanticsNode().boundsInRoot
-        assertTrue(before.width >= row.width / 2)
-        compose.onNodeWithContentDescription("Action 5").performScrollTo().assertIsDisplayed().performClick()
-        compose.runOnIdle { assertEquals(5, clicked) }
-        compose.onNodeWithText("Find in note").assertIsDisplayed()
-        assertEquals(before.width, compose.onNodeWithText("Find in note").fetchSemanticsNode().boundsInRoot.width, 0.5f)
+    @Test fun narrowSearchKeepsTheInputAndCloseControlSeparate() {
+        showSearch(width = 288.dp, fontScale = 1.5f)
+        val close = compose.onNodeWithContentDescription("Close search").fetchSemanticsNode().boundsInRoot
+        val input = compose.onNodeWithContentDescription("Find in note").fetchSemanticsNode().boundsInRoot
+        assertTrue(close.right <= input.left)
+        compose.onNodeWithContentDescription("Find in note").performTextInput("missing")
+        compose.onNodeWithText("No matches").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Clear search").performClick()
+        compose.onNodeWithContentDescription("Clear search").assertDoesNotExist()
         compose.onRoot().captureRoboImage("build/reports/daily-use/editor-search-narrow-large-text.png")
     }
 
-    @Test fun tappingTheBarOpensExistingNoteSearch() {
-        show()
-        compose.onNodeWithText("Find in note").performClick()
-        compose.onNodeWithContentDescription("Close search").assertIsDisplayed()
-        compose.onNodeWithText("Find").assertIsDisplayed()
+    @Test fun searchDirectionFollowsRightToLeftLayout() {
+        showSearch(direction = LayoutDirection.Rtl)
+        val search = compose.onNodeWithContentDescription("Find in note").fetchSemanticsNode().boundsInRoot
+        val close = compose.onNodeWithContentDescription("Close search").fetchSemanticsNode().boundsInRoot
+        assertTrue(search.right <= close.left)
     }
 
-    @Test fun trailingActionsFollowRightToLeftLayout() {
-        show(mutableStateOf(2), direction = LayoutDirection.Rtl)
-        val search = compose.onNodeWithText("Find in note").fetchSemanticsNode().boundsInRoot
-        val action = compose.onNodeWithContentDescription("Action 0").fetchSemanticsNode().boundsInRoot
-        assertTrue(action.right < search.left)
+    @Test fun boardTextRemainsSearchableInInlineSearch() {
+        showSearch(content = """{"t":[{"t":"Project plan"}]}""", type = "SCRIBBLE")
+        compose.onNodeWithContentDescription("Find in note").performTextInput("project")
+        compose.onNodeWithText("1 of 1").assertIsDisplayed()
     }
 }

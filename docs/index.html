@@ -111,7 +111,7 @@
     <div class="badge">🔒</div>
     <h1>MyNotes+ Privacy Policy</h1>
     <p>Private. Encrypted. Yours.</p>
-    <span class="updated">Last updated: 7 September 2026</span>
+    <span class="updated">Last updated: 11 September 2026</span>
   </header>
 
   <main class="wrap">
@@ -245,11 +245,29 @@
         <strong>ciphertext blobs</strong> are stored in your Google Drive.
       </p>
       <p>
-        The key that unlocks your notes is protected by a <strong>recovery passphrase that you choose</strong>
-        and is kept only in wrapped (encrypted) form. Because the key is never uploaded in the clear,
-        <strong>neither Google nor anyone you might accidentally share a Drive folder with can read your
-        notes</strong> — only someone with your account <em>and</em> passphrase can. Signing in on a new
-        device with the same account and passphrase restores the supported synced records.
+        The data-encryption key is protected by a <strong>recovery passphrase or optional 4-10 digit
+        recovery PIN that you choose</strong>. Its wrapped (encrypted) copy is stored in Drive's hidden
+        app data; the key is not uploaded in plaintext. An unlocked device caches a separately
+        Keystore-protected copy. A new device needs Google authorization and the current recovery
+        credential to restore supported synced records. This recovery PIN is separate from your
+        device's screen lock and the app-lock setting.
+      </p>
+      <p>
+        <strong>A long passphrase is recommended.</strong> Someone who obtains the encrypted records
+        and wrapped key can try guessing the credential offline. A short numeric PIN offers much less
+        protection, even with password-based key derivation. PIN setup displays this warning and
+        requires acknowledgment. No encryption mechanism guarantees absolute protection.
+      </p>
+      <p>
+        Deleting the visible MyNotes folder does not remove its hidden recovery key. If the folder is
+        verified missing, sync pauses and Settings offers a check after restoring it from Drive Trash
+        or an explicitly confirmed <strong>Start over</strong>. Starting over creates a new key and
+        folder from supported records on this device. It does not delete or re-encrypt local notes,
+        and it cannot recover content that existed only in the deleted folder. Older wrapped keys and
+        hidden template/reminder collections are retained separately; reconnect other updated devices
+        with the new credential. Setup progress is stored locally in Keystore-encrypted form so an
+        interrupted published setup can resume. A network error or forgotten credential alone does
+        not authorize replacing a healthy cloud setup.
       </p>
       <p>
         <strong>Current sync limits:</strong> note content, custom templates and reminders sync. Image and
@@ -260,9 +278,10 @@
         content encryption.
       </p>
       <p class="muted">
-        Google Drive’s own privacy policy also applies to the encrypted blobs stored in your account. If you
-        lose your recovery passphrase, the synced notes cannot be recovered — this is the trade‑off that keeps
-        them private to you.
+        Google Drive's own privacy policy also applies to the encrypted blobs stored in your account.
+        The developer cannot recover a forgotten recovery passphrase or PIN or unlock cloud-only data
+        for you. Existing unlocked local copies are not removed; keep a full encrypted backup of
+        important content before changing cloud storage.
       </p>
       <p class="muted">
         <strong>“Share a link” is separate and always a deliberate choice.</strong> When you tap
@@ -315,8 +334,8 @@
           you need first. Exported files in Downloads or a chosen folder are separate and must be deleted there.</li>
         <li><strong>Remove Drive data:</strong> disconnect Drive on every device first. In Drive, delete the
           MyNotes backup folder and any MyNotes Shared copies, then empty Drive Trash. In Drive Settings &gt;
-          Manage apps, find MyNotes and delete its hidden app data to remove the recovery-key envelope,
-          templates and reminders. Google controls its own retention policies.</li>
+          Manage apps, find MyNotes and delete its hidden app data to remove current and retained older
+          recovery-key envelopes, templates and reminders. Google controls its own retention policies.</li>
         <li><strong>Revoke access:</strong> remove MyNotes from your Google account's third-party connections.
           Disconnecting or revoking access does not itself delete existing Drive files or local notes.</li>
       </ol>
@@ -331,7 +350,7 @@
         We use industry‑standard protections including AES‑256‑GCM encryption, the Android Keystore, and an
         optional biometric/device-credential app lock. Authentication errors do not open the vault.
         You can also enable "Hide in recent apps" to protect previews. No storage or security mechanism
-        can guarantee absolute protection. Keep your device secure and your recovery passphrase private.
+        can guarantee absolute protection. Keep your device secure and your recovery passphrase or PIN private.
       </p>
     </div>
 

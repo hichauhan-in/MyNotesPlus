@@ -25,7 +25,7 @@ class SyncStatsWidget : AppWidgetProvider() {
             val status = when {
                 settings == null || settings.driveAccountEmail == null ->
                     context.getString(R.string.widget_stats_syncoff)
-                !settings.recoveryConfigured ->
+                !settings.recoveryConfigured || settings.driveRecoveryIssue != null ->
                     context.getString(R.string.widget_stats_notbacked)
                 settings.lastSyncedAt > 0L ->
                     context.getString(R.string.widget_stats_synced)

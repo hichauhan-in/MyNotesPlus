@@ -19,16 +19,16 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Orchestrates the end-to-end-encrypted cloud sync: key setup (recovery passphrase + envelope) and
+ * Orchestrates the end-to-end-encrypted cloud sync: recovery credential/key setup and
  * the two-way note sync itself.
  *
  * Key model (see [SyncCrypto] for the crypto details):
- *  - A random **Data Encryption Key (DEK)** is generated once per account and reused on every
+ *  - A random **Data Encryption Key (DEK)** is generated per sync setup and reused on every
  *    device. It encrypts every synced note blob (AES-256-GCM).
- *  - The DEK is wrapped with a key derived from the user's **recovery passphrase** and the wrapped
+ *  - The DEK is wrapped with a key derived from the user's recovery passphrase or PIN and the wrapped
  *    copy (the "envelope") is stored in Drive's hidden *appDataFolder* - never the plaintext DEK.
  *  - On this device the unlocked DEK is cached wrapped by the Android Keystore, so we only ask for
- *    the passphrase once per device (or when restoring on a new one).
+ *    the credential once per device (or after the cloud key changes).
  *
  * [syncNow] performs the two-way, last-write-wins sync of note records to/from the visible folder.
  */
@@ -38,10 +38,116 @@ class CloudSyncManager(
     private val folderRepository: FolderRepository,
     private val reminderRepository: ReminderRepository,
     private val appContext: Context,
+    private val remote: DriveSyncRemote = DriveRest,
 ) {
 
-    enum class RemoteState { NO_ENVELOPE, HAS_ENVELOPE, ERROR }
-    enum class RestoreResult { SUCCESS, WRONG_PASSPHRASE, ERROR }
+    enum class RemoteState { NO_ENVELOPE, HAS_ENVELOPE, FOLDER_MISSING, KEY_MISSING, ERROR }
+    enum class RestoreResult { SUCCESS, WRONG_PASSPHRASE, FOLDER_MISSING, KEY_MISSING, ERROR }
+    enum class SetupResult { SUCCESS, STATE_CHANGED, ERROR }
+
+    data class RecoveryStatus(
+        val state: RemoteState,
+        val method: DriveRecoveryMethod = DriveRecoveryMethod.PASSPHRASE,
+        val canUseLocalKey: Boolean = false,
+    )
+
+    private data class EnvelopeRecord(val fileId: String, val etag: String, val envelope: DriveRecoveryEnvelope)
+    private data class VaultState(val email: String, val state: RemoteState, val record: EnvelopeRecord?, val folderId: String?)
+    private data class PendingSetup(val email: String, val envelope: DriveRecoveryEnvelope, val wrappedLocalKey: String, val previousIdentity: String?)
+
+    private suspend fun pendingSetup(): PendingSetup? {
+        val encrypted = settings.pendingDriveSetup() ?: return null
+        val value = JSONObject(requireNotNull(EncryptionManager.decryptOrNull(encrypted)) { "Interrupted setup could not be read" })
+        return PendingSetup(value.getString("email"), DriveRecoveryEnvelope.decode(value.getString("envelope")),
+            value.getString("localKey"), if (value.isNull("previousIdentity")) null else value.getString("previousIdentity"))
+    }
+
+    private suspend fun savePending(setup: PendingSetup) {
+        val value = JSONObject().put("email", setup.email).put("envelope", setup.envelope.encode())
+            .put("localKey", setup.wrappedLocalKey).put("previousIdentity", setup.previousIdentity ?: JSONObject.NULL)
+        settings.setPendingDriveSetup(EncryptionManager.encrypt(value.toString()))
+    }
+
+    private suspend fun finishPending(accessToken: String, setup: PendingSetup): Boolean {
+        check(settings.snapshot().driveAccountEmail.equals(setup.email, ignoreCase = true)) { "The Google account changed" }
+        val published = readEnvelope(accessToken) ?: return false
+        if (published.envelope.identity != setup.envelope.identity) return false
+        val folderId = requireNotNull(setup.envelope.folderId)
+        when (remote.folderStatus(accessToken, folderId)) {
+            DriveFolderStatus.UNKNOWN -> return false
+            DriveFolderStatus.MISSING -> if (!remote.createFolder(accessToken, FOLDER_NAME, folderId)) return false
+            DriveFolderStatus.PRESENT -> Unit
+        }
+        if (remote.folderStatus(accessToken, folderId) != DriveFolderStatus.PRESENT) return false
+        if (readEnvelope(accessToken)?.envelope?.identity != setup.envelope.identity) return false
+        settings.activateDriveKey(setup.email, folderId, setup.wrappedLocalKey, setup.envelope.identity)
+        SyncStatus.setError(null)
+        return true
+    }
+
+    private fun readEnvelope(accessToken: String): EnvelopeRecord? = when (val found = remote.lookupAppDataFile(accessToken, ENVELOPE_NAME)) {
+        DriveFileLookup.Missing -> null
+        DriveFileLookup.Unknown -> error("Could not verify the Drive recovery key")
+        is DriveFileLookup.Found -> {
+            val download = requireNotNull(remote.downloadNote(accessToken, found.id)) { "Could not read the Drive recovery key" }
+            EnvelopeRecord(found.id, download.etag, DriveRecoveryEnvelope.decode(download.content))
+        }
+    }
+
+    private suspend fun inspect(accessToken: String): VaultState {
+        val email = requireNotNull(remote.fetchAccountEmail(accessToken)) { "Could not verify the Google account" }
+        val local = settings.snapshot()
+        check(local.driveAccountEmail == null || local.driveAccountEmail.equals(email, ignoreCase = true)) { "The connected Google account changed" }
+        val record = readEnvelope(accessToken)
+        val explicitFolder = record?.envelope?.folderId ?: local.driveFolderId
+        var folder = explicitFolder
+        var status = explicitFolder?.let { remote.folderStatus(accessToken, it) }
+        if (status == DriveFolderStatus.UNKNOWN) error("Could not verify the Drive folder")
+        if (explicitFolder == null || (record?.envelope?.folderId == null && status == DriveFolderStatus.MISSING)) {
+            when (val found = remote.lookupFolder(accessToken, FOLDER_NAME)) {
+                DriveFileLookup.Unknown -> error("Could not locate the Drive folder")
+                DriveFileLookup.Missing -> { folder = null; status = DriveFolderStatus.MISSING }
+                is DriveFileLookup.Found -> { folder = found.id; status = remote.folderStatus(accessToken, found.id) }
+            }
+        }
+        if (status == DriveFolderStatus.UNKNOWN) error("Could not verify the Drive folder")
+        val state = when {
+            status == DriveFolderStatus.PRESENT && record != null -> RemoteState.HAS_ENVELOPE
+            status == DriveFolderStatus.PRESENT -> RemoteState.KEY_MISSING
+            record != null || local.driveFolderId != null || local.recoveryConfigured -> RemoteState.FOLDER_MISSING
+            else -> RemoteState.NO_ENVELOPE
+        }
+        return VaultState(email, state, record, folder?.takeIf { status == DriveFolderStatus.PRESENT })
+    }
+
+    suspend fun connect(accessToken: String): RecoveryStatus = syncMutex.withLock {
+        withContext(Dispatchers.IO) {
+            try {
+                val email = requireNotNull(remote.fetchAccountEmail(accessToken))
+                settings.selectDriveAccount(email)
+                pendingSetup()?.takeIf { it.email.equals(email, ignoreCase = true) }?.let { setup ->
+                    if (readEnvelope(accessToken)?.envelope?.identity == setup.envelope.identity) {
+                        check(finishPending(accessToken, setup)) { "Could not finish interrupted Drive setup" }
+                    }
+                }
+                recoveryStatus(inspect(accessToken))
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { RecoveryStatus(RemoteState.ERROR) }
+        }
+    }
+
+    private suspend fun recoveryStatus(vault: VaultState): RecoveryStatus {
+        val local = settings.snapshot()
+        val identity = vault.record?.envelope?.identity
+        val matches = vault.state == RemoteState.HAS_ENVELOPE && identity == local.driveKeyIdentity && vault.folderId == local.driveFolderId && hasLocalKey()
+        settings.setDriveRecoveryIssue(when (vault.state) {
+            RemoteState.FOLDER_MISSING -> "FOLDER_MISSING"
+            RemoteState.KEY_MISSING -> "KEY_MISSING"
+            RemoteState.HAS_ENVELOPE -> if (matches) null else "KEY_CHANGED"
+            else -> null
+        })
+        return RecoveryStatus(vault.state, vault.record?.envelope?.method ?: DriveRecoveryMethod.PASSPHRASE, matches)
+    }
 
     /** Outcome of a two-way sync. */
     sealed interface SyncOutcome {
@@ -52,59 +158,79 @@ class CloudSyncManager(
             val deletedRemote: Int,
         ) : SyncOutcome
 
-        /** This device hasn't unlocked the key yet (needs the recovery passphrase). */
+        /** This device hasn't unlocked the key yet (needs the recovery credential). */
         object NotUnlocked : SyncOutcome
+        object FolderMissing : SyncOutcome
+        object KeyMissing : SyncOutcome
+        object KeyChanged : SyncOutcome
         object Error : SyncOutcome
     }
 
     /** Whether the connected account already has a recovery envelope on Drive. Network call. */
-    suspend fun remoteState(accessToken: String): RemoteState = withContext(Dispatchers.IO) {
-        // Confirm we can reach Drive first; only then trust an "absent" result. This avoids ever
-        // mistaking a transient failure for "no envelope" (which would prompt a new passphrase and
-        // overwrite the real key, orphaning existing notes).
-        if (DriveRest.fetchAccountEmail(accessToken) == null) return@withContext RemoteState.ERROR
-        when (DriveRest.appDataFileExists(accessToken, ENVELOPE_NAME)) {
-            true -> RemoteState.HAS_ENVELOPE
-            false -> RemoteState.NO_ENVELOPE
-            null -> RemoteState.ERROR
-        }
-    }
+    suspend fun remoteState(accessToken: String): RemoteState = connect(accessToken).state
 
     /** True if this device already holds the unlocked DEK (so no passphrase prompt is needed). */
-    suspend fun hasLocalKey(): Boolean = settings.wrappedDataKey() != null
+    suspend fun hasLocalKey(): Boolean {
+        val key = runCatching { localDataKey() }.getOrNull() ?: return false
+        return try { key.size == 32 } finally { key.fill(0) }
+    }
 
     /**
      * First-time setup for the account: generate a DEK, wrap it with [passphrase], store the
      * envelope in appDataFolder, create the visible "MyNotes" folder, and cache the DEK locally.
      * The [passphrase] array is zeroed before returning.
      */
-    suspend fun provision(accessToken: String, passphrase: CharArray): Boolean = withContext(Dispatchers.IO) {
+    suspend fun provision(
+        accessToken: String,
+        passphrase: CharArray,
+        method: DriveRecoveryMethod = DriveRecoveryMethod.PASSPHRASE,
+        restartConfirmed: Boolean = false,
+    ): SetupResult {
         try {
-            val dek = SyncCrypto.newDataKey()
-            val salt = SyncCrypto.newSalt()
-            val kek = SyncCrypto.deriveKeyFromPassphrase(passphrase, salt)
-            val wrapped = SyncCrypto.wrapDataKey(dek, kek)
-            val envelope = JSONObject()
-                .put("version", ENVELOPE_VERSION)
-                .put("salt", SyncCrypto.encodeBase64(salt))
-                .put("wrappedDek", SyncCrypto.encodeBase64(wrapped))
-                .put("createdAt", System.currentTimeMillis())
-                .toString()
-            val saved = DriveRest.upsertAppDataFile(accessToken, ENVELOPE_NAME, envelope) != null
-            val folderId = if (saved) DriveRest.ensureFolder(accessToken, FOLDER_NAME) else null
-            if (saved && folderId != null) {
-                cacheDek(dek)
-                settings.setDriveFolderId(folderId)
-                settings.setRecoveryConfigured(true)
-                true
-            } else {
-                false
+            return syncMutex.withLock {
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) {
+                    try {
+                        require(method.accepts(passphrase)) { "Invalid recovery credential" }
+                        val vault = inspect(accessToken)
+                        val pending = pendingSetup()?.takeIf { it.email.equals(vault.email, ignoreCase = true) }
+                        if (pending != null && vault.record?.envelope?.identity == pending.envelope.identity) {
+                            val key = pending.envelope.unlock(passphrase) ?: return@withContext SetupResult.STATE_CHANGED
+                            key.fill(0)
+                            return@withContext if (finishPending(accessToken, pending)) SetupResult.SUCCESS else SetupResult.ERROR
+                        }
+                        val allowed = if (restartConfirmed) vault.state == RemoteState.FOLDER_MISSING else vault.state == RemoteState.NO_ENVELOPE
+                        if (!allowed) return@withContext SetupResult.STATE_CHANGED
+                        settings.selectDriveAccount(vault.email)
+                        val previousIdentity = vault.record?.envelope?.identity
+                        val key = SyncCrypto.newDataKey()
+                        val setup = try {
+                            val folderId = requireNotNull(remote.generateFileId(accessToken)) { "Could not reserve a Drive folder" }
+                            PendingSetup(vault.email, DriveRecoveryEnvelope.create(passphrase, method, key, folderId),
+                                SyncCrypto.encodeBase64(EncryptionManager.encryptBytes(key)), previousIdentity)
+                        } finally { key.fill(0) }
+                        savePending(setup)
+                        vault.record?.let { previous ->
+                            check(remote.createAppDataFile(accessToken, "mynotes.key.retired.${java.util.UUID.randomUUID()}.json", previous.envelope.encode()) != null) {
+                                "Could not preserve the previous recovery key"
+                            }
+                        }
+                        val latest = inspect(accessToken)
+                        if (latest.state != vault.state || latest.record?.fileId != vault.record?.fileId ||
+                            latest.record?.etag != vault.record?.etag || latest.record?.envelope?.identity != previousIdentity) {
+                            return@withContext SetupResult.STATE_CHANGED
+                        }
+                        if (vault.record != null) {
+                            remote.updateCollection(accessToken, vault.record.fileId, setup.envelope.encode(), vault.record.etag)
+                        } else {
+                            if (remote.lookupAppDataFile(accessToken, ENVELOPE_NAME) != DriveFileLookup.Missing) return@withContext SetupResult.STATE_CHANGED
+                            remote.createAppDataFile(accessToken, ENVELOPE_NAME, setup.envelope.encode())
+                        }
+                        if (readEnvelope(accessToken)?.envelope?.identity != setup.envelope.identity) return@withContext SetupResult.STATE_CHANGED
+                        if (finishPending(accessToken, setup)) SetupResult.SUCCESS else SetupResult.ERROR
+                    } catch (_: Exception) { SetupResult.ERROR }
+                }
             }
-        } catch (e: Exception) {
-            false
-        } finally {
-            passphrase.fill('\u0000')
-        }
+        } finally { passphrase.fill('\u0000') }
     }
 
     /**
@@ -112,28 +238,39 @@ class CloudSyncManager(
      * unwrapping it with [passphrase]. Returns [RestoreResult.WRONG_PASSPHRASE] when the passphrase
      * doesn't unwrap the key. The [passphrase] array is zeroed before returning.
      */
-    suspend fun restore(accessToken: String, passphrase: CharArray): RestoreResult = withContext(Dispatchers.IO) {
+    suspend fun restore(accessToken: String, passphrase: CharArray): RestoreResult {
         try {
-            val id = DriveRest.findAppDataFile(accessToken, ENVELOPE_NAME) ?: return@withContext RestoreResult.ERROR
-            val json = DriveRest.downloadText(accessToken, id) ?: return@withContext RestoreResult.ERROR
-            val obj = JSONObject(json)
-            val salt = SyncCrypto.decodeBase64(obj.getString("salt"))
-            val wrapped = SyncCrypto.decodeBase64(obj.getString("wrappedDek"))
-            val kek = SyncCrypto.deriveKeyFromPassphrase(passphrase, salt)
-            val dek = SyncCrypto.unwrapDataKey(wrapped, kek) ?: return@withContext RestoreResult.WRONG_PASSPHRASE
-            val folderId = DriveRest.ensureFolder(accessToken, FOLDER_NAME) ?: return@withContext RestoreResult.ERROR
-            cacheDek(dek)
-            settings.setDriveFolderId(folderId)
-            settings.setRecoveryConfigured(true)
-            RestoreResult.SUCCESS
-        } catch (e: Exception) {
-            RestoreResult.ERROR
-        } finally {
-            passphrase.fill('\u0000')
-        }
+            return syncMutex.withLock {
+                withContext(Dispatchers.IO) {
+                    try {
+                        require(passphrase.size in 1..1024)
+                        val vault = inspect(accessToken)
+                        if (vault.state == RemoteState.FOLDER_MISSING) return@withContext RestoreResult.FOLDER_MISSING
+                        if (vault.state == RemoteState.KEY_MISSING || vault.state == RemoteState.NO_ENVELOPE) return@withContext RestoreResult.KEY_MISSING
+                        val record = requireNotNull(vault.record)
+                        val folderId = requireNotNull(vault.folderId)
+                        val key = record.envelope.unlock(passphrase) ?: return@withContext RestoreResult.WRONG_PASSPHRASE
+                        try {
+                            val latest = readEnvelope(accessToken) ?: return@withContext RestoreResult.ERROR
+                            if (latest.envelope.identity != record.envelope.identity) return@withContext RestoreResult.ERROR
+                            when (remote.folderStatus(accessToken, folderId)) {
+                                DriveFolderStatus.MISSING -> return@withContext RestoreResult.FOLDER_MISSING
+                                DriveFolderStatus.UNKNOWN -> return@withContext RestoreResult.ERROR
+                                DriveFolderStatus.PRESENT -> Unit
+                            }
+                            settings.selectDriveAccount(vault.email)
+                            settings.activateDriveKey(vault.email, folderId, SyncCrypto.encodeBase64(EncryptionManager.encryptBytes(key)), record.envelope.identity)
+                            SyncStatus.setError(null)
+                            RestoreResult.SUCCESS
+                        } finally { key.fill(0) }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { RestoreResult.ERROR }
+                }
+            }
+        } finally { passphrase.fill('\u0000') }
     }
 
-    /** The unlocked DEK for this device, or null if this device hasn't been set up. For later slices. */
+    /** The unlocked DEK for this device, or null if this device hasn't been set up. */
     suspend fun localDataKey(): ByteArray? {
         val stored = settings.wrappedDataKey() ?: return null
         return EncryptionManager.decryptBytes(SyncCrypto.decodeBase64(stored))
@@ -143,12 +280,9 @@ class CloudSyncManager(
      * Forgets the locally cached key + folder on disconnect. The Drive envelope is left intact, so
      * reconnecting and re-entering the passphrase restores access.
      */
-    suspend fun forgetLocalKeys() {
-        settings.setWrappedDataKey(null)
-        settings.setDriveFolderId(null)
-        settings.setRecoveryConfigured(false)
-        settings.setSyncedNoteVersions(emptyMap())
-        settings.setSyncedReminderIds(emptySet())
+    suspend fun forgetLocalKeys() = syncMutex.withLock {
+        settings.clearDriveKey()
+        SyncStatus.setError(null)
     }
 
     private val syncMutex = Mutex()
@@ -165,9 +299,19 @@ class CloudSyncManager(
             syncInternal(accessToken).also { outcome ->
                 SyncStatus.setError(when (outcome) {
                     is SyncOutcome.Success -> null
-                    SyncOutcome.NotUnlocked -> "Enter your recovery passphrase to sync."
+                    SyncOutcome.NotUnlocked -> "Enter your recovery passphrase or PIN to sync."
+                    SyncOutcome.FolderMissing -> "The MyNotes folder is missing from Drive. Open Settings to reconnect or start over. Your local notes are unchanged."
+                    SyncOutcome.KeyMissing -> "The Drive recovery key is missing. Open Settings to review recovery. Your local notes are unchanged."
+                    SyncOutcome.KeyChanged -> "Drive sync was set up again or needs to be unlocked. Open Settings and enter its current recovery credential."
                     SyncOutcome.Error -> "Sync is incomplete. Local notes are saved; reconnect or retry sync."
                 })
+                when (outcome) {
+                    SyncOutcome.FolderMissing -> settings.setDriveRecoveryIssue("FOLDER_MISSING")
+                    SyncOutcome.KeyMissing -> settings.setDriveRecoveryIssue("KEY_MISSING")
+                    SyncOutcome.KeyChanged, SyncOutcome.NotUnlocked -> settings.setDriveRecoveryIssue("KEY_CHANGED")
+                    is SyncOutcome.Success -> settings.setDriveRecoveryIssue(null)
+                    SyncOutcome.Error -> Unit
+                }
             }
         } finally {
             SyncStatus.setSyncing(false)
@@ -175,13 +319,30 @@ class CloudSyncManager(
     }
 
     private suspend fun syncInternal(accessToken: String): SyncOutcome = withContext(Dispatchers.IO) {
+        var dataKey: ByteArray? = null
         try {
-            val dek = localDataKey() ?: return@withContext SyncOutcome.NotUnlocked
-            val folderId = settings.snapshot().driveFolderId
-                ?: DriveRest.ensureFolder(accessToken, FOLDER_NAME)?.also { settings.setDriveFolderId(it) }
-                ?: return@withContext SyncOutcome.Error
-            val remote = DriveRest.listFolderNotes(accessToken, folderId) ?: return@withContext SyncOutcome.Error
-            val remoteById = remote.associateBy { it.noteId }
+            val vault = inspect(accessToken)
+            when (vault.state) {
+                RemoteState.FOLDER_MISSING -> return@withContext SyncOutcome.FolderMissing
+                RemoteState.KEY_MISSING, RemoteState.NO_ENVELOPE -> return@withContext SyncOutcome.KeyMissing
+                RemoteState.ERROR -> return@withContext SyncOutcome.Error
+                RemoteState.HAS_ENVELOPE -> Unit
+            }
+            val envelope = requireNotNull(vault.record).envelope
+            val local = settings.snapshot()
+            if (local.driveKeyIdentity != envelope.identity || local.driveFolderId != vault.folderId) return@withContext SyncOutcome.KeyChanged
+            dataKey = localDataKey()
+            val dek = dataKey ?: return@withContext SyncOutcome.NotUnlocked
+            val folderId = requireNotNull(vault.folderId)
+            val remoteNotes = remote.listFolderNotes(accessToken, folderId) ?: return@withContext SyncOutcome.Error
+            when (remote.folderStatus(accessToken, folderId)) {
+                DriveFolderStatus.MISSING -> return@withContext SyncOutcome.FolderMissing
+                DriveFolderStatus.UNKNOWN -> return@withContext SyncOutcome.Error
+                DriveFolderStatus.PRESENT -> Unit
+            }
+            val latestEnvelope = readEnvelope(accessToken)?.envelope ?: return@withContext SyncOutcome.KeyMissing
+            if (latestEnvelope.identity != envelope.identity || latestEnvelope.folderId != envelope.folderId) return@withContext SyncOutcome.KeyChanged
+            val remoteById = remoteNotes.associateBy { it.noteId }
             val localStamps = noteRepository.idStamps()
             val base = settings.syncedNoteVersions()
             val validFolderIds = folderRepository.folderIdsOnce()
@@ -200,7 +361,7 @@ class CloudSyncManager(
                     when (SyncMergePolicy.decide(local, rmeta?.updatedAt, base[id])) {
                         MergeAction.UNCHANGED -> if (local != null) newBase[id] = local else newBase.remove(id)
                         MergeAction.PUSH, MergeAction.KEEP_BOTH -> {
-                            val download = rmeta?.let { requireNotNull(DriveRest.downloadNote(accessToken, it.fileId)) }
+                            val download = rmeta?.let { requireNotNull(remote.downloadNote(accessToken, it.fileId)) }
                             val remoteNote = download?.let { downloaded ->
                                 val decoded = SyncCrypto.decrypt(SyncCrypto.decodeBase64(downloaded.content), dek)
                                 val note = requireNotNull(decoded?.let { noteFromJson(String(it, Charsets.UTF_8)) })
@@ -228,11 +389,11 @@ class CloudSyncManager(
                         }
                         MergeAction.DELETE_REMOTE -> {
                             val metadata = requireNotNull(rmeta)
-                            val download = requireNotNull(DriveRest.downloadNote(accessToken, metadata.fileId))
+                            val download = requireNotNull(remote.downloadNote(accessToken, metadata.fileId))
                             val decoded = requireNotNull(SyncCrypto.decrypt(SyncCrypto.decodeBase64(download.content), dek))
                             val note = requireNotNull(noteFromJson(String(decoded, Charsets.UTF_8)))
                             check(note.id == id && note.updatedAt == metadata.updatedAt)
-                            check(DriveRest.deleteFile(accessToken, metadata.fileId, download.etag))
+                            check(remote.deleteFile(accessToken, metadata.fileId, download.etag))
                             deletedRemote++
                             newBase.remove(id)
                         }
@@ -243,12 +404,14 @@ class CloudSyncManager(
             }
             settings.setSyncedNoteVersions(newBase)
             if (failed) return@withContext SyncOutcome.Error
-            if (!syncTemplates(accessToken, dek) || !syncReminders(accessToken, dek)) return@withContext SyncOutcome.Error
+            if (!syncTemplates(accessToken, dek, envelope.templatesName) || !syncReminders(accessToken, dek, envelope.remindersName)) return@withContext SyncOutcome.Error
             settings.setLastSyncedAt(System.currentTimeMillis())
             SyncOutcome.Success(pushed, pulled, deletedLocal, deletedRemote)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             SyncOutcome.Error
-        }
+        } finally { dataKey?.fill(0) }
     }
 
     /** Encrypts and uploads a single local note (create when [existingFileId] is null). */
@@ -262,7 +425,7 @@ class CloudSyncManager(
     ): Long? {
         val note = noteRepository.decryptedNoteForSync(id) ?: return null
         val blob = SyncCrypto.encodeBase64(SyncCrypto.encrypt(noteToJson(note).toByteArray(Charsets.UTF_8), dek))
-        return if (DriveRest.putNoteFile(accessToken, folderId, id, "$id.mnote", blob, note.updatedAt, existingFileId, etag) != null) note.updatedAt else null
+        return if (remote.putNoteFile(accessToken, folderId, id, "$id.mnote", blob, note.updatedAt, existingFileId, etag) != null) note.updatedAt else null
     }
 
     /** Downloads, decrypts and writes a single remote note into the local database. */
@@ -273,7 +436,7 @@ class CloudSyncManager(
         validFolderIds: Set<String>,
         expectedLocalStamp: Long?,
     ): Boolean {
-        val content = DriveRest.downloadNote(accessToken, rmeta.fileId)?.content ?: return false
+        val content = remote.downloadNote(accessToken, rmeta.fileId)?.content ?: return false
         val decrypted = SyncCrypto.decrypt(SyncCrypto.decodeBase64(content), dek) ?: return false
         val note = noteFromJson(String(decrypted, Charsets.UTF_8)) ?: return false
         if (note.id != rmeta.noteId || note.updatedAt != rmeta.updatedAt) return false
@@ -285,14 +448,14 @@ class CloudSyncManager(
      * Backs up and merges the user's custom templates. Templates are a small global list, so the
      * whole set is stored as one encrypted file in Drive's hidden appDataFolder. Merge is
      * last-write-wins per template id (using updatedAt / trashedAt), so creating, editing, trashing
-     * or restoring a template on one device propagates to the others. Best-effort: a failure here
-     * never fails the note sync.
+    * or restoring a template on one device propagates to the others. Failed metadata sync leaves
+    * the overall sync incomplete without advancing the successful-sync timestamp.
      */
-    private suspend fun syncTemplates(accessToken: String, dek: ByteArray): Boolean {
+    private suspend fun syncTemplates(accessToken: String, dek: ByteArray, name: String): Boolean {
         return try {
             val local = settings.allTemplatesForSync()
-            val remoteFileId = verifiedCollectionId(accessToken, TEMPLATES_NAME)
-            val download = remoteFileId?.let { requireNotNull(DriveRest.downloadNote(accessToken, it)) }
+            val remoteFileId = verifiedCollectionId(accessToken, name)
+            val download = remoteFileId?.let { requireNotNull(remote.downloadNote(accessToken, it)) }
             val remote = download?.let { templatesFromJson(decryptCollection(it.content, dek)) } ?: emptyList()
 
             val merged = mergeTemplates(local, remote)
@@ -300,7 +463,7 @@ class CloudSyncManager(
                 val blob = SyncCrypto.encodeBase64(
                     SyncCrypto.encrypt(templatesToJson(merged).toByteArray(Charsets.UTF_8), dek),
                 )
-                check(putCollection(accessToken, TEMPLATES_NAME, remoteFileId, download?.etag, blob))
+                check(putCollection(accessToken, name, remoteFileId, download?.etag, blob))
             }
             if (merged.toSet() != local.toSet()) settings.mergeSyncedTemplates(merged)
             true
@@ -321,18 +484,18 @@ class CloudSyncManager(
 
     /**
      * Backs up and merges reminders. Like templates, the whole set is one encrypted file in Drive's
-     * hidden appDataFolder ([REMINDERS_NAME]); merge is last-write-wins per reminder id via
+    * hidden appDataFolder for the active recovery generation; merge is last-write-wins per reminder id via
      * [Reminder.updatedAt], and a persisted merge base ([SettingsRepository.syncedReminderIds])
      * tells a real deletion apart from a reminder that simply hasn't reached this device yet. Pulled
-     * reminders are re-armed with AlarmManager so they actually fire here. Best-effort: a failure
-     * here never fails the note sync.
+    * reminders are re-armed with AlarmManager so they actually fire here. A failure leaves the
+    * overall sync incomplete without advancing the successful-sync timestamp.
      */
-    private suspend fun syncReminders(accessToken: String, dek: ByteArray): Boolean {
+    private suspend fun syncReminders(accessToken: String, dek: ByteArray, name: String): Boolean {
         return try {
             val local = reminderRepository.allForSync()
             val localById = local.associateBy { it.id }
-            val remoteFileId = verifiedCollectionId(accessToken, REMINDERS_NAME)
-            val download = remoteFileId?.let { requireNotNull(DriveRest.downloadNote(accessToken, it)) }
+            val remoteFileId = verifiedCollectionId(accessToken, name)
+            val download = remoteFileId?.let { requireNotNull(remote.downloadNote(accessToken, it)) }
             val remote = download?.let { remindersFromJson(decryptCollection(it.content, dek)) } ?: emptyList()
             val remoteById = remote.associateBy { it.id }
             val base = settings.syncedReminderIds()
@@ -366,7 +529,7 @@ class CloudSyncManager(
                 val blob = SyncCrypto.encodeBase64(
                     SyncCrypto.encrypt(remindersToJson(merged).toByteArray(Charsets.UTF_8), dek),
                 )
-                check(putCollection(accessToken, REMINDERS_NAME, remoteFileId, download?.etag, blob))
+                check(putCollection(accessToken, name, remoteFileId, download?.etag, blob))
             }
             if (upserts.isNotEmpty() || deleteLocal.isNotEmpty()) {
                 reminderRepository.applySyncedSet(appContext, upserts, deleteLocal, localById.mapValues { it.value.updatedAt })
@@ -377,10 +540,10 @@ class CloudSyncManager(
         catch (_: Exception) { false }
     }
 
-    private fun verifiedCollectionId(accessToken: String, name: String): String? = when (DriveRest.appDataFileExists(accessToken, name)) {
-        true -> requireNotNull(DriveRest.findAppDataFile(accessToken, name)) { "Could not read sync metadata" }
-        false -> null
-        null -> error("Could not verify sync metadata")
+    private fun verifiedCollectionId(accessToken: String, name: String): String? = when (val found = remote.lookupAppDataFile(accessToken, name)) {
+        is DriveFileLookup.Found -> found.id
+        DriveFileLookup.Missing -> null
+        DriveFileLookup.Unknown -> error("Could not verify sync metadata")
     }
 
     private fun decryptCollection(content: String, key: ByteArray): String = String(
@@ -388,8 +551,8 @@ class CloudSyncManager(
     )
 
     private fun putCollection(accessToken: String, name: String, fileId: String?, etag: String?, content: String): Boolean =
-        if (fileId == null) DriveRest.upsertAppDataFile(accessToken, name, content) != null
-        else DriveRest.updateCollection(accessToken, fileId, content, requireNotNull(etag))
+        if (fileId == null) remote.createAppDataFile(accessToken, name, content) != null
+        else remote.updateCollection(accessToken, fileId, content, requireNotNull(etag))
 
     private fun remindersToJson(items: List<Reminder>): String {
         val arr = JSONArray()
@@ -513,16 +676,8 @@ class CloudSyncManager(
         )
     }.getOrNull()
 
-    /** Caches the DEK on this device, wrapped by the Android Keystore (never the raw DEK). */
-    private suspend fun cacheDek(dek: ByteArray) {
-        settings.setWrappedDataKey(SyncCrypto.encodeBase64(EncryptionManager.encryptBytes(dek)))
-    }
-
     companion object {
         private const val ENVELOPE_NAME = "mynotes.key.json"
-        private const val ENVELOPE_VERSION = 1
         private const val FOLDER_NAME = "MyNotes"
-        private const val TEMPLATES_NAME = "mynotes.templates.json"
-        private const val REMINDERS_NAME = "mynotes.reminders.json"
     }
 }

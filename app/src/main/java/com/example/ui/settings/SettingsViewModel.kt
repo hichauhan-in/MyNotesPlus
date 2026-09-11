@@ -5,11 +5,13 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.settings.AppSettings
+import com.example.data.settings.SettingsRepository
 import com.example.data.sync.CloudSyncManager
-import com.example.data.sync.DriveRest
+import com.example.data.sync.DriveRecoveryMethod
 import com.example.di.AppContainer
 import com.example.ui.theme.ThemeMode
 import com.example.widget.WidgetUpdater
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -17,7 +19,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /** Which recovery-passphrase dialog to show, if any. */
 enum class PassphraseMode { CREATE, ENTER }
@@ -33,12 +34,17 @@ data class SyncScreenState(
     /** Non-null when the recovery-passphrase dialog should be shown. */
     val passphrasePrompt: PassphraseMode? = null,
     val passphraseError: String? = null,
+    val folderMissing: Boolean = false,
+    val confirmRestart: Boolean = false,
+    val restartConfirmed: Boolean = false,
+    val recoveryMethod: DriveRecoveryMethod = DriveRecoveryMethod.PASSPHRASE,
 )
 
-class SettingsViewModel : ViewModel() {
-    private val repository = AppContainer.settingsRepository!!
-    private val syncManager = AppContainer.cloudSyncManager!!
-
+class SettingsViewModel(
+    private val repository: SettingsRepository = AppContainer.settingsRepository!!,
+    private val syncManager: CloudSyncManager = AppContainer.cloudSyncManager!!,
+    private val applicationScope: CoroutineScope = AppContainer.applicationScope,
+) : ViewModel() {
     /** The current Drive access token (short-lived, in-memory only), captured on connect. */
     private var pendingToken: String? = null
 
@@ -112,59 +118,80 @@ class SettingsViewModel : ViewModel() {
      * recovery passphrase to unlock it (new device / after disconnect).
      */
     fun onDriveAuthorized(accessToken: String) {
+        if (_syncState.value.busy) return
         _syncState.value = SyncScreenState(connecting = true)
         viewModelScope.launch {
-            val email = withContext(Dispatchers.IO) { DriveRest.fetchAccountEmail(accessToken) }
-            if (email == null) {
-                _syncState.value = SyncScreenState(error = "Connected, but couldn't reach Google Drive. Please try again.")
-                return@launch
-            }
-            repository.setDriveAccountEmail(email)
-            repository.setCloudSyncEnabled(true)
             pendingToken = accessToken
-            if (syncManager.hasLocalKey()) {
-                // Already set up on this device - just run a sync.
-                _syncState.value = SyncScreenState()
-                runSync(accessToken)
-                return@launch
-            }
-            when (syncManager.remoteState(accessToken)) {
-                CloudSyncManager.RemoteState.HAS_ENVELOPE ->
-                    _syncState.value = SyncScreenState(passphrasePrompt = PassphraseMode.ENTER)
-                CloudSyncManager.RemoteState.NO_ENVELOPE ->
-                    _syncState.value = SyncScreenState(passphrasePrompt = PassphraseMode.CREATE)
-                CloudSyncManager.RemoteState.ERROR ->
-                    _syncState.value = SyncScreenState(error = "Couldn't reach Google Drive. Please try again.")
-            }
+            val status = syncManager.connect(accessToken)
+            applyRecoveryStatus(status)
+            if (status.canUseLocalKey) runSync(accessToken)
         }
     }
 
+    private fun applyRecoveryStatus(status: CloudSyncManager.RecoveryStatus) {
+        _syncState.value = when (status.state) {
+            CloudSyncManager.RemoteState.HAS_ENVELOPE -> SyncScreenState(
+                passphrasePrompt = if (status.canUseLocalKey) null else PassphraseMode.ENTER,
+                recoveryMethod = status.method,
+            )
+            CloudSyncManager.RemoteState.NO_ENVELOPE -> SyncScreenState(passphrasePrompt = PassphraseMode.CREATE)
+            CloudSyncManager.RemoteState.FOLDER_MISSING -> SyncScreenState(folderMissing = true, confirmRestart = true)
+            CloudSyncManager.RemoteState.KEY_MISSING -> SyncScreenState(error =
+                "The Drive folder exists, but its recovery key is missing. Your local notes are safe. Back up local notes and review the existing Drive data before setting up again.")
+            CloudSyncManager.RemoteState.ERROR -> SyncScreenState(error =
+                "Couldn't verify the Drive folder and recovery key. Check your connection and Google account, then try again. Nothing was reset.")
+        }
+    }
+
+    fun confirmDriveRestart() {
+        if (_syncState.value.busy || !_syncState.value.folderMissing) return
+        if (pendingToken == null) {
+            _syncState.value = SyncScreenState(folderMissing = true, error = "Reconnect Google Drive to start over.")
+        } else {
+            _syncState.value = SyncScreenState(folderMissing = true, restartConfirmed = true, passphrasePrompt = PassphraseMode.CREATE)
+        }
+    }
+
+    fun dismissDriveRestart() {
+        if (!_syncState.value.busy) _syncState.value = _syncState.value.copy(confirmRestart = false)
+    }
     fun onDriveAuthFailed(message: String?) {
         _syncState.value = SyncScreenState(error = message ?: "Google sign-in was cancelled.")
     }
 
     /** Creates a brand-new recovery passphrase + key envelope for this account. */
-    fun submitCreatePassphrase(passphrase: CharArray) {
+    fun submitCreatePassphrase(passphrase: CharArray, method: DriveRecoveryMethod = DriveRecoveryMethod.PASSPHRASE) {
+        if (_syncState.value.busy) { passphrase.fill('\u0000'); return }
         val token = pendingToken
         if (token == null) {
             passphrase.fill('\u0000')
             _syncState.value = _syncState.value.copy(passphrasePrompt = null, error = "Please reconnect Google Drive.")
             return
         }
+        val restart = _syncState.value.restartConfirmed
         _syncState.value = _syncState.value.copy(busy = true, passphraseError = null)
-        viewModelScope.launch {
-            val ok = syncManager.provision(token, passphrase)
-            if (ok) {
-                _syncState.value = SyncScreenState()
-                runSync(token)
-            } else {
-                _syncState.value = _syncState.value.copy(busy = false, passphraseError = "Couldn't set up sync. Please try again.")
+        applicationScope.launch(Dispatchers.Main.immediate) {
+            when (syncManager.provision(token, passphrase, method, restart)) {
+                CloudSyncManager.SetupResult.SUCCESS -> {
+                    _syncState.value = SyncScreenState()
+                    runSync(token)
+                }
+                CloudSyncManager.SetupResult.STATE_CHANGED -> {
+                    val status = syncManager.connect(token)
+                    applyRecoveryStatus(status)
+                    if (status.canUseLocalKey) runSync(token)
+                }
+                CloudSyncManager.SetupResult.ERROR -> _syncState.value = _syncState.value.copy(
+                    busy = false,
+                    passphraseError = "Couldn't finish Drive setup. Local notes are unchanged. Retry, or reconnect to resume an interrupted setup.",
+                )
             }
         }
     }
 
     /** Unlocks the existing key envelope with the entered recovery passphrase. */
     fun submitEnterPassphrase(passphrase: CharArray) {
+        if (_syncState.value.busy) { passphrase.fill('\u0000'); return }
         val token = pendingToken
         if (token == null) {
             passphrase.fill('\u0000')
@@ -172,14 +199,18 @@ class SettingsViewModel : ViewModel() {
             return
         }
         _syncState.value = _syncState.value.copy(busy = true, passphraseError = null)
-        viewModelScope.launch {
+        applicationScope.launch(Dispatchers.Main.immediate) {
             when (syncManager.restore(token, passphrase)) {
                 CloudSyncManager.RestoreResult.SUCCESS -> {
                     _syncState.value = SyncScreenState()
                     runSync(token)
                 }
                 CloudSyncManager.RestoreResult.WRONG_PASSPHRASE ->
-                    _syncState.value = _syncState.value.copy(busy = false, passphraseError = "Incorrect passphrase. Please try again.")
+                    _syncState.value = _syncState.value.copy(busy = false, passphraseError = "Incorrect recovery ${_syncState.value.recoveryMethod.label.lowercase()}. Please try again.")
+                CloudSyncManager.RestoreResult.FOLDER_MISSING ->
+                    _syncState.value = SyncScreenState(folderMissing = true, confirmRestart = true)
+                CloudSyncManager.RestoreResult.KEY_MISSING ->
+                    _syncState.value = SyncScreenState(error = "The Drive recovery key is missing. Your local notes are unchanged.")
                 CloudSyncManager.RestoreResult.ERROR ->
                     _syncState.value = _syncState.value.copy(busy = false, passphraseError = "Couldn't restore from Drive. Please try again.")
             }
@@ -187,6 +218,7 @@ class SettingsViewModel : ViewModel() {
     }
 
     fun dismissPassphrase() {
+        if (_syncState.value.busy) return
         _syncState.value = _syncState.value.copy(passphrasePrompt = null, passphraseError = null, busy = false)
     }
 
@@ -196,8 +228,15 @@ class SettingsViewModel : ViewModel() {
         viewModelScope.launch {
             _syncState.value = when (syncManager.syncNow(accessToken)) {
                 is CloudSyncManager.SyncOutcome.Success -> _syncState.value.copy(syncing = false)
-                CloudSyncManager.SyncOutcome.NotUnlocked ->
-                    _syncState.value.copy(syncing = false, error = "Enter your recovery passphrase to sync.")
+                CloudSyncManager.SyncOutcome.FolderMissing ->
+                    SyncScreenState(folderMissing = true, confirmRestart = true)
+                CloudSyncManager.SyncOutcome.KeyMissing ->
+                    _syncState.value.copy(syncing = false, error = "The Drive recovery key is missing. Reconnect to review recovery.")
+                CloudSyncManager.SyncOutcome.NotUnlocked, CloudSyncManager.SyncOutcome.KeyChanged ->
+                    syncManager.connect(accessToken).let { status ->
+                        applyRecoveryStatus(status)
+                        _syncState.value
+                    }
                 CloudSyncManager.SyncOutcome.Error ->
                     _syncState.value.copy(syncing = false, error = "Sync failed. Please try again.")
             }
@@ -219,6 +258,7 @@ class SettingsViewModel : ViewModel() {
     }
 
     fun disconnectDrive() {
+        if (_syncState.value.busy || _syncState.value.connecting || _syncState.value.syncing) return
         viewModelScope.launch {
             syncManager.forgetLocalKeys()
             repository.setDriveAccountEmail(null)

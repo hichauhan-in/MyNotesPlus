@@ -12,16 +12,13 @@ import javax.crypto.spec.SecretKeySpec
  * End-to-end encryption for cloud sync.
  *
  * The model is "envelope encryption":
- *  - A single random 256-bit **Data Encryption Key (DEK)** encrypts every synced note/attachment
- *    blob (AES-256-GCM). The same DEK is reused across all of a user's devices, which is what lets
- *    a note encrypted on one phone be decrypted on another.
- *  - The DEK itself never travels in the clear. It is **wrapped** (encrypted) two ways and only the
- *    wrapped copies are stored:
- *      1. Wrapped with a key derived from the user's **recovery passphrase** (PBKDF2). This copy is
- *         zero-knowledge: without the passphrase it is useless, so even someone who gets a copy of
- *         all the synced files (e.g. via a shared Drive) cannot read anything.
- *      2. Wrapped and kept in Drive's private *appDataFolder* for convenient auto-unlock on another
- *         device signed into the same Google account (see [CloudSyncManager]).
+ *  - A random 256-bit **Data Encryption Key (DEK)** encrypts synced notes, templates and reminders
+ *    using AES-256-GCM. Devices participating in the same sync setup use the same DEK.
+ *  - The DEK is wrapped using PBKDF2 and the user's recovery passphrase or PIN. Only this encrypted
+ *    envelope is stored in Drive's hidden appDataFolder. A copied envelope permits offline credential
+ *    guessing; short PINs offer much less protection than long passphrases.
+ *  - [CloudSyncManager] separately wraps the local DEK with Android Keystore for automatic sync on
+ *    an unlocked device. Google account authorization alone does not unlock a new device.
  *
  * Nothing here touches the Android Keystore, precisely because the DEK must be reproducible on a
  * different device - a Keystore key never leaves the device that made it.
@@ -34,8 +31,7 @@ object SyncCrypto {
     private const val GCM_TAG_BITS = 128
 
     private const val KDF_ALGORITHM = "PBKDF2WithHmacSHA256"
-    // OWASP-recommended floor for PBKDF2-HMAC-SHA256 (2023). High enough to make brute-forcing a
-    // strong passphrase against a stolen wrapped-DEK impractical.
+    // Legacy envelope work factor; new recovery envelopes supply their versioned value explicitly.
     private const val KDF_ITERATIONS = 210_000
     private const val KEY_BITS = 256
     private const val SALT_LENGTH = 16
@@ -49,8 +45,9 @@ object SyncCrypto {
     fun newDataKey(): ByteArray = ByteArray(KEY_BITS / 8).also { secureRandom.nextBytes(it) }
 
     /** Derives a 256-bit key-encryption key from a passphrase + [salt] using PBKDF2. */
-    fun deriveKeyFromPassphrase(passphrase: CharArray, salt: ByteArray): ByteArray {
-        val spec = PBEKeySpec(passphrase, salt, KDF_ITERATIONS, KEY_BITS)
+    fun deriveKeyFromPassphrase(passphrase: CharArray, salt: ByteArray, iterations: Int = KDF_ITERATIONS): ByteArray {
+        require(iterations in KDF_ITERATIONS..1_300_000 && salt.size == SALT_LENGTH) { "Unsupported key derivation parameters" }
+        val spec = PBEKeySpec(passphrase, salt, iterations, KEY_BITS)
         try {
             return SecretKeyFactory.getInstance(KDF_ALGORITHM).generateSecret(spec).encoded
         } finally {

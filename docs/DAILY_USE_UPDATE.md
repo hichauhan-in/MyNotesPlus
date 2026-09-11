@@ -39,6 +39,17 @@
 - Template/reminder merges remain last-write-wins per item. Failed downloads are not treated as empty collections. Metadata upload failures do not advance the successful-sync timestamp.
 - Drive still does not sync media binaries, book structure or recent versions. Full-device transfer uses the encrypted backup. Scheduled backups and distributed expense-ledger merging are not implemented.
 
+## Deleted Drive Folder Recovery
+
+- The visible MyNotes folder and the hidden recovery-key envelope are checked separately. A verified missing/trashed folder pauses automatic sync before its absence can be interpreted as individual note deletions. Authentication, network, malformed metadata and ambiguous lookup failures are not treated as a missing folder.
+- Settings > Backup & Sync > Repair Drive sync offers **Not now**, **Check again** after restoring the folder from Drive Trash, or explicitly confirmed **Start over**. A healthy existing folder is not reset because a credential was forgotten. An existing folder with missing recovery metadata requires review, not automatic replacement.
+- Start over creates a new data key and visible folder, resets only cloud checkpoints, and reuploads the supported notes, templates and reminders currently on this device. Local notes, attachments, books, versions and security preferences are not deleted or re-encrypted. Content that existed only in the deleted cloud folder cannot be recovered by this operation. Keep a full encrypted local backup before making cloud changes.
+- Choose a new passphrase (8-1024 characters, the default) or a recovery PIN (4-10 ASCII digits, preserving leading zeroes). Both require confirmation. PIN setup explicitly warns about offline guessing and requires acknowledgment; a long passphrase is recommended. This is a cloud recovery credential, not a replacement for the device PIN or app lock. Backup/share passphrase requirements are unchanged.
+- New recovery envelopes use format 2 and PBKDF2-HMAC-SHA256 with 600,000 iterations. Format-1 passphrase envelopes retain their original 210,000-iteration derivation and remain readable. Update other devices before reconnecting to a new setup; they need its current credential.
+- Previous wrapped keys and old hidden template/reminder collections are retained separately, not silently deleted or merged into the new setup. A Keystore-encrypted local setup journal lets reconnect finish a published setup after interrupted folder creation. Existing local keys/checkpoints remain until activation succeeds.
+- Conditional key writes and state rechecks reject a folder restored during reset preparation or a key replaced during note listing. Drive is not a transactional database; live provider behavior and multi-device timing still require signed-device verification.
+- Tests cover deleted legacy folders, restore-from-Trash checks, explicit reset approval/cancellation, interrupted setup, rejected key writes, stale-device keys, account switching, new setup, wrong credentials, credential bounds and the Settings-to-PIN-unlock flow. Dialog tests retain SDK 35 without explicit screen qualifiers to avoid Robolectric issue 8460.
+
 ## Reminders
 
 - Delivery, completion and snooze are separate. A one-shot alert remains overdue until explicitly completed or disabled.
@@ -91,7 +102,7 @@ expense captures and the phone create menu were inspected for spacing, readable 
 - Run signed-device tests for real Keystore/biometric behavior, app-lock return from camera/photo pickers,
   process death, storage exhaustion, large media, audio focus and notification actions.
 - Test Google Drive on two authorized devices: ETag/conditional-write responses, conflict copies,
-  cancellation/offline retries and account reconnection. Do not use simultaneous expense edits as accounting reconciliation.
+    cancellation/offline retries and account reconnection. Delete/restore the visible folder, exercise Not now/Check again/Start over, interrupt setup, and reconnect with 4- and 10-digit PINs including leading zeroes. Check credential keyboard/scrolling and screenshot protection on short screens. Do not use simultaneous expense edits as accounting reconciliation.
 - Exercise Android 24/25 ML entry points and SDK initialization, current target-API behavior and 16 KB native-library compatibility.
 - Run full TalkBack, enlarged-font, landscape/foldable, camera/recording, reboot and time-zone tests on devices.
 - Publish the updated privacy policy, review OAuth and Data safety/Financial features declarations, increment versionCode,

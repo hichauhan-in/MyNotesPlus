@@ -81,16 +81,16 @@ object SyncCoordinator {
         manager: CloudSyncManager,
         scope: CoroutineScope,
     ) {
-        scope.launch { runSync(context.applicationContext, settings, manager) }
+        scope.launch { runSync(context.applicationContext, settings, manager, manual = true) }
     }
 
     /** Shared sync body: connectivity/key checks, a silent token, then [CloudSyncManager.syncNow]. */
-    private suspend fun runSync(appCtx: Context, settings: SettingsRepository, manager: CloudSyncManager) {
+    private suspend fun runSync(appCtx: Context, settings: SettingsRepository, manager: CloudSyncManager, manual: Boolean = false) {
         if (!inFlight.compareAndSet(false, true)) return
         try {
             val snapshot = settings.snapshot()
-            if (snapshot.driveAccountEmail == null || !snapshot.recoveryConfigured) return
-            if (!manager.hasLocalKey()) return
+            if (snapshot.driveAccountEmail == null || !snapshot.recoveryConfigured || !snapshot.cloudSyncEnabled) return
+            if (!manual && snapshot.driveRecoveryIssue != null) return
             val token = silentToken(appCtx) ?: run {
                 SyncStatus.setError("Drive is unavailable. Check your connection or reconnect in Settings.")
                 return

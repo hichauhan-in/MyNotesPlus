@@ -16,6 +16,16 @@ API-24/25 notification-settings and smart-text guards have focused tests. See th
 signing and Play Console gates; earlier statements that no Android toolchain was available describe
 the original review environment, not the current verification capability.
 
+## Drive Recovery Update
+
+Deleted-folder recovery now separates the visible MyNotes folder from the hidden recovery key.
+Only verified folder absence permits a confirmed Start over; restored folders and network/permission
+failures do not authorize key replacement. New setup supports an optional 4-10 digit recovery PIN
+with a weaker-protection warning; long passphrases remain the default. Existing passphrase envelopes
+remain readable, while new setups require updated clients on other devices. Local data remains intact,
+and older hidden recovery generations are retained separately. See [DAILY_USE_UPDATE.md](DAILY_USE_UPDATE.md)
+for the recovery flow, automated coverage and cloud-only data limitations.
+
 ## Implemented
 
 - Expenses use integer paise and explicit pending/completed transactions. Credits add to the source balance; expenses, savings and investments subtract; internal transfers debit and credit together. Budget-only records do not change balances.
@@ -80,6 +90,7 @@ Run the matching tasks through the configured Android Studio or host build envir
 - Imports: repeat import of the same file, wrong passphrase, an old short-passphrase share, missing/corrupt attachments, board images, oversized input and interrupted navigation. Existing notes' attachments must remain unchanged.
 - Permissions: deny microphone, deny notifications, and leave exact alarms off. Gallery and external camera flows should not request broad media/storage/camera permission. Reboot, time-zone changes and exact-alarm permission changes need device verification.
 - Drive: use two signed test devices, verify connect/recovery, manual/automatic sync and failures. Public-link cancellation must not upload anything; expense public links must not be available. Remove a public copy in Drive and verify its link stops working.
+- Drive recovery: remove the visible folder while keeping hidden app data, cancel the reset prompt, restore from Drive Trash and use Check again, then exercise a separately confirmed Start over. Verify local content survives, supported records upload to the new folder, other updated devices request the new credential, and interrupted setup can resume. Test 4- and 10-digit PINs with leading zeroes, wrong credentials, offline/permission failures and credential-dialog keyboard/scrolling/screenshot protection. A short PIN is not equivalent to a strong passphrase.
 
 ## Play Console Gates
 

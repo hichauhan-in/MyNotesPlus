@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
@@ -95,6 +97,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.google.android.gms.auth.api.identity.Identity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.sync.DriveAuth
+import com.example.data.sync.DriveRecoveryMethod
 import com.example.data.settings.PageInkTextMode
 import com.example.ui.components.NeuIconButton
 import com.example.ui.components.NeuSurface
@@ -312,12 +315,17 @@ fun SettingsScreen(
                             subtitle = settings.driveAccountEmail ?: "",
                             onClick = {},
                         )
-                        if (!settings.recoveryConfigured) {
+                        if (!settings.recoveryConfigured || settings.driveRecoveryIssue != null || syncState.folderMissing) {
                             SettingsDivider()
                             SettingsLinkRow(
                                 icon = Icons.Rounded.Lock,
-                                title = "Finish encryption setup",
-                                subtitle = "Set your recovery passphrase to start syncing",
+                                title = if (settings.driveRecoveryIssue != null || syncState.folderMissing) "Repair Drive sync" else "Finish encryption setup",
+                                subtitle = when (settings.driveRecoveryIssue) {
+                                    "FOLDER_MISSING" -> "Check the missing folder or start over"
+                                    "KEY_CHANGED" -> "Unlock with the current recovery passphrase or PIN"
+                                    "KEY_MISSING" -> "Review the missing cloud recovery key"
+                                    else -> "Choose a recovery passphrase or PIN"
+                                },
                                 trailingIcon = Icons.Rounded.ChevronRight,
                                 onClick = { connectDrive() },
                             )
@@ -352,7 +360,7 @@ fun SettingsScreen(
                 Spacer(Modifier.height(12.dp))
                 InfoBanner(
                     icon = Icons.Rounded.Shield,
-                    text = "Drive sync is encrypted and covers note records, templates and reminders. Images, recordings and book structure are included in local encrypted backups, not Drive sync. Keep your recovery passphrases safe.",
+                    text = "Drive sync is encrypted and covers note records, templates and reminders. Images, recordings and book structure are included in local encrypted backups, not Drive sync. Keep your recovery passphrase or PIN safe.",
                     tint = MaterialTheme.colorScheme.tertiary,
                 )
             }
@@ -548,18 +556,26 @@ fun SettingsScreen(
     if (showPrivacyPolicy) PrivacyPolicyDialog(onDismiss = { showPrivacyPolicy = false })
     if (showDataControls) DataControlsDialog(onDismiss = { showDataControls = false })
 
+    if (syncState.confirmRestart) DriveRestartDialog(
+        onConfirm = viewModel::confirmDriveRestart,
+        onCheckAgain = { viewModel.dismissDriveRestart(); connectDrive() },
+        onDismiss = viewModel::dismissDriveRestart,
+    )
+
     when (syncState.passphrasePrompt) {
         PassphraseMode.CREATE -> CreatePassphraseDialog(
             busy = syncState.busy,
             error = syncState.passphraseError,
-            onConfirm = { viewModel.submitCreatePassphrase(it) },
+            onConfirm = { secret, method -> viewModel.submitCreatePassphrase(secret, method) },
             onDismiss = { viewModel.dismissPassphrase() },
+            restarting = syncState.restartConfirmed,
         )
         PassphraseMode.ENTER -> EnterPassphraseDialog(
             busy = syncState.busy,
             error = syncState.passphraseError,
             onConfirm = { viewModel.submitEnterPassphrase(it) },
             onDismiss = { viewModel.dismissPassphrase() },
+            method = syncState.recoveryMethod,
         )
         null -> Unit
     }
@@ -1068,117 +1084,140 @@ private fun AppInfoBullet(text: String) {
 @Composable
 private fun PassphraseScaffold(
     title: String,
+    busy: Boolean,
     onDismiss: () -> Unit,
+    confirmButton: @Composable () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(24.dp))
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(22.dp),
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Spacer(Modifier.height(14.dp))
-            content()
-        }
-    }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(title) },
+        text = { Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), content = content) },
+        confirmButton = confirmButton,
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
+        properties = DialogProperties(securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn),
+    )
 }
 
 /** First-time setup: choose a recovery passphrase (with confirmation). */
 @Composable
-private fun CreatePassphraseDialog(
+internal fun CreatePassphraseDialog(
     busy: Boolean,
     error: String?,
-    onConfirm: (CharArray) -> Unit,
+    onConfirm: (CharArray, DriveRecoveryMethod) -> Unit,
     onDismiss: () -> Unit,
+    restarting: Boolean = false,
 ) {
+    var method by remember { mutableStateOf(DriveRecoveryMethod.PASSPHRASE) }
     var pass by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
-    val tooShort = pass.isNotEmpty() && pass.length < 8
-    val valid = pass.length >= 8 && pass == confirm
-    PassphraseScaffold(title = "Create recovery passphrase", onDismiss = onDismiss) {
+    var pinRiskAccepted by remember { mutableStateOf(false) }
+    val pin = method == DriveRecoveryMethod.PIN
+    val secretValid = method.accepts(pass.toCharArray())
+    val valid = secretValid && pass == confirm && (!pin || pinRiskAccepted)
+    val keyboardType = if (pin) KeyboardType.NumberPassword else KeyboardType.Password
+    fun acceptsInput(value: String): Boolean = if (pin) value.length <= 10 && value.all { it in '0'..'9' } else value.length <= 1024
+    PassphraseScaffold(
+        title = if (restarting) "New Drive recovery credential" else "Protect Drive sync",
+        busy = busy,
+        onDismiss = onDismiss,
+        confirmButton = {
+            Button(onClick = { onConfirm(pass.toCharArray(), method) }, enabled = valid && !busy) {
+                Text(if (pin) "Set PIN" else "Set passphrase")
+            }
+        },
+    ) {
         Text(
-            text = "This passphrase encrypts your cloud backup. You'll need it to restore notes on a " +
-                "new device. If you forget it, the backup can't be recovered - not even by us.",
+            text = "You'll need this credential to unlock Drive sync on another device. It cannot be recovered if forgotten. Local notes are not deleted or re-encrypted when you set it.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            DriveRecoveryMethod.entries.forEach { option ->
+                androidx.compose.material3.FilterChip(
+                    selected = method == option,
+                    enabled = !busy,
+                    onClick = { method = option; pass = ""; confirm = ""; pinRiskAccepted = false },
+                    label = { Text(option.label) },
+                )
+            }
+        }
+        if (pin) {
+            Text("Use 4 to 10 digits. A short PIN is easier to guess than a long passphrase, especially if someone obtains a copy of the encrypted recovery key.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Checkbox(checked = pinRiskAccepted, onCheckedChange = { pinRiskAccepted = it }, enabled = !busy)
+                Text("I understand a PIN offers weaker protection.", style = MaterialTheme.typography.bodySmall)
+            }
+        }
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(
             value = pass,
-            onValueChange = { pass = it },
-            label = { Text("Passphrase") },
+            onValueChange = { if (acceptsInput(it)) pass = it },
+            label = { Text(if (pin) "Recovery PIN" else "Recovery passphrase") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
             enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(10.dp))
         OutlinedTextField(
             value = confirm,
-            onValueChange = { confirm = it },
-            label = { Text("Confirm passphrase") },
+            onValueChange = { if (acceptsInput(it)) confirm = it },
+            label = { Text(if (pin) "Confirm PIN" else "Confirm passphrase") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
             enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
         )
         val warning = when {
-            tooShort -> "Use at least 8 characters."
             error != null -> error
+            pass.isNotEmpty() && !secretValid -> if (pin) "Use 4 to 10 digits." else "Use at least 8 characters. A longer passphrase is recommended."
+            confirm.isNotEmpty() && pass != confirm -> if (pin) "PINs don't match." else "Passphrases don't match."
             else -> null
         }
         warning?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
-        Spacer(Modifier.height(18.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
-            Spacer(Modifier.width(8.dp))
-            Button(onClick = { onConfirm(pass.toCharArray()) }, enabled = valid && !busy) {
-                Text("Set passphrase")
-            }
-        }
     }
 }
 
 /** New device / reconnect: enter the existing recovery passphrase to unlock the key. */
 @Composable
-private fun EnterPassphraseDialog(
+internal fun EnterPassphraseDialog(
     busy: Boolean,
     error: String?,
     onConfirm: (CharArray) -> Unit,
     onDismiss: () -> Unit,
+    method: DriveRecoveryMethod = DriveRecoveryMethod.PASSPHRASE,
 ) {
     var pass by remember { mutableStateOf("") }
-    PassphraseScaffold(title = "Enter recovery passphrase", onDismiss = onDismiss) {
+    val pin = method == DriveRecoveryMethod.PIN
+    val valid = if (pin) method.accepts(pass.toCharArray()) else pass.isNotEmpty()
+    PassphraseScaffold(
+        title = if (pin) "Enter recovery PIN" else "Enter recovery passphrase",
+        busy = busy,
+        onDismiss = onDismiss,
+        confirmButton = { Button(onClick = { onConfirm(pass.toCharArray()) }, enabled = valid && !busy) { Text("Unlock") } },
+    ) {
         Text(
-            text = "Enter your recovery passphrase to unlock your encrypted notes on this device.",
+            text = if (pin) "Enter the recovery PIN you chose for this Drive sync. Leading zeroes are part of the PIN."
+                else "Enter your recovery passphrase to unlock your encrypted notes on this device.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(16.dp))
         OutlinedTextField(
             value = pass,
-            onValueChange = { pass = it },
-            label = { Text("Passphrase") },
+            onValueChange = { if ((!pin && it.length <= 1024) || (pin && it.length <= 10 && it.all { digit -> digit in '0'..'9' })) pass = it },
+            label = { Text(if (pin) "Recovery PIN" else "Passphrase") },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            keyboardOptions = KeyboardOptions(keyboardType = if (pin) KeyboardType.NumberPassword else KeyboardType.Password),
             enabled = !busy,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -1186,17 +1225,24 @@ private fun EnterPassphraseDialog(
             Spacer(Modifier.height(8.dp))
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
-        Spacer(Modifier.height(18.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
-            Spacer(Modifier.width(8.dp))
-            Button(onClick = { onConfirm(pass.toCharArray()) }, enabled = pass.isNotEmpty() && !busy) {
-                Text("Unlock")
-            }
-        }
     }
+}
+
+@Composable
+internal fun DriveRestartDialog(onConfirm: () -> Unit, onCheckAgain: () -> Unit, onDismiss: () -> Unit) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("MyNotes folder not found") },
+        text = {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Deleting the MyNotes folder does not remove its recovery key from Drive's hidden app data.")
+                Text("Start over creates a new encrypted sync from the notes, templates and reminders saved on this device. Your local notes stay unchanged. Content that existed only in the deleted folder will not be recovered.")
+                Text("Choose a new passphrase or PIN and reconnect other devices afterward. Old cloud recovery data is kept separate.")
+                Text("To keep the previous sync instead, restore the MyNotes folder from Drive Trash, then check again.")
+                TextButton(onClick = onCheckAgain) { Text("Check again") }
+            }
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Start over") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Not now") } },
+    )
 }

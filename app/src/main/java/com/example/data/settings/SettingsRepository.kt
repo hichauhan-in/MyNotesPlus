@@ -36,10 +36,12 @@ data class AppSettings(
     val cloudSyncEnabled: Boolean = false,
     /** The connected Google account email, or null when Drive sync isn't set up. */
     val driveAccountEmail: String? = null,
-    /** True once a recovery passphrase + key envelope have been set up for this account. */
+    /** True once a recovery credential and key envelope have been set up for this account. */
     val recoveryConfigured: Boolean = false,
     /** Drive file id of the visible "MyNotes" sync folder, or null if not created yet. */
     val driveFolderId: String? = null,
+    val driveKeyIdentity: String? = null,
+    val driveRecoveryIssue: String? = null,
     /** True once the one-time "connect Google Drive?" prompt has been shown after onboarding. */
     val syncPrompted: Boolean = false,
     /** Epoch millis of the last successful sync, or 0 if never. */
@@ -61,14 +63,11 @@ data class AppSettings(
     val smartSuggestionsEnabled: Boolean = true,
 )
 
-/**
- * Lightweight, non-sensitive preference store backed by Jetpack DataStore.
- * (No note content or keys are ever stored here.)
- */
-class SettingsRepository(context: Context) {
-
-    private val dataStore = context.applicationContext.settingsDataStore
-
+/** Preferences and Keystore-encrypted template/recovery data backed by Jetpack DataStore. */
+class SettingsRepository(
+    context: Context,
+    private val dataStore: DataStore<Preferences> = context.applicationContext.settingsDataStore,
+) {
     private object Keys {
         val THEME = stringPreferencesKey("theme_mode")
         val DYNAMIC = booleanPreferencesKey("dynamic_color")
@@ -77,6 +76,9 @@ class SettingsRepository(context: Context) {
         val DRIVE_EMAIL = stringPreferencesKey("drive_account_email")
         val RECOVERY_CONFIGURED = booleanPreferencesKey("recovery_configured")
         val DRIVE_FOLDER_ID = stringPreferencesKey("drive_folder_id")
+        val DRIVE_KEY_IDENTITY = stringPreferencesKey("drive_key_identity")
+        val DRIVE_RECOVERY_ISSUE = stringPreferencesKey("drive_recovery_issue")
+        val DRIVE_PENDING_SETUP = stringPreferencesKey("drive_pending_setup")
         // The Data Encryption Key, wrapped by the device Keystore (never the plaintext DEK).
         val WRAPPED_DEK = stringPreferencesKey("wrapped_dek")
         // Comma-joined note ids that were present at the last successful sync (the merge base).
@@ -120,6 +122,8 @@ class SettingsRepository(context: Context) {
             driveAccountEmail = prefs[Keys.DRIVE_EMAIL],
             recoveryConfigured = prefs[Keys.RECOVERY_CONFIGURED] ?: false,
             driveFolderId = prefs[Keys.DRIVE_FOLDER_ID],
+            driveKeyIdentity = prefs[Keys.DRIVE_KEY_IDENTITY],
+            driveRecoveryIssue = prefs[Keys.DRIVE_RECOVERY_ISSUE],
             syncPrompted = prefs[Keys.SYNC_PROMPTED] ?: false,
             lastSyncedAt = prefs[Keys.LAST_SYNCED] ?: 0L,
             appLockEnabled = prefs[Keys.LOCK] ?: false,
@@ -150,6 +154,47 @@ class SettingsRepository(context: Context) {
 
     suspend fun setDriveAccountEmail(email: String?) = edit {
         if (email == null) it.remove(Keys.DRIVE_EMAIL) else it[Keys.DRIVE_EMAIL] = email
+    }
+
+    internal suspend fun selectDriveAccount(email: String) = edit { prefs ->
+        if (!prefs[Keys.DRIVE_EMAIL].equals(email, ignoreCase = true)) clearDriveKey(prefs)
+        prefs[Keys.DRIVE_EMAIL] = email
+        prefs[Keys.CLOUD] = true
+    }
+
+    internal suspend fun activateDriveKey(email: String, folderId: String, wrappedKey: String, identity: String) = edit { prefs ->
+        check(prefs[Keys.DRIVE_EMAIL].equals(email, ignoreCase = true)) { "The connected Google account changed" }
+        if (prefs[Keys.DRIVE_KEY_IDENTITY] != identity || prefs[Keys.DRIVE_FOLDER_ID] != folderId) {
+            prefs.remove(Keys.SYNCED_IDS)
+            prefs.remove(Keys.SYNCED_VERSIONS)
+            prefs.remove(Keys.SYNCED_REMINDER_IDS)
+            prefs.remove(Keys.LAST_SYNCED)
+        }
+        prefs[Keys.DRIVE_FOLDER_ID] = folderId
+        prefs[Keys.WRAPPED_DEK] = wrappedKey
+        prefs[Keys.DRIVE_KEY_IDENTITY] = identity
+        prefs[Keys.RECOVERY_CONFIGURED] = true
+        prefs.remove(Keys.DRIVE_RECOVERY_ISSUE)
+        prefs.remove(Keys.DRIVE_PENDING_SETUP)
+    }
+
+    internal suspend fun clearDriveKey() = edit(::clearDriveKey)
+
+    private fun clearDriveKey(prefs: androidx.datastore.preferences.core.MutablePreferences) {
+        listOf(Keys.DRIVE_FOLDER_ID, Keys.WRAPPED_DEK, Keys.DRIVE_KEY_IDENTITY, Keys.SYNCED_IDS,
+            Keys.SYNCED_VERSIONS, Keys.SYNCED_REMINDER_IDS, Keys.DRIVE_RECOVERY_ISSUE, Keys.DRIVE_PENDING_SETUP).forEach { prefs.remove(it) }
+        prefs.remove(Keys.LAST_SYNCED)
+        prefs[Keys.RECOVERY_CONFIGURED] = false
+    }
+
+    internal suspend fun setDriveRecoveryIssue(issue: String?) = edit {
+        if (issue == null) it.remove(Keys.DRIVE_RECOVERY_ISSUE) else it[Keys.DRIVE_RECOVERY_ISSUE] = issue
+    }
+
+    internal suspend fun pendingDriveSetup(): String? = dataStore.data.first()[Keys.DRIVE_PENDING_SETUP]
+
+    internal suspend fun setPendingDriveSetup(value: String?) = edit {
+        if (value == null) it.remove(Keys.DRIVE_PENDING_SETUP) else it[Keys.DRIVE_PENDING_SETUP] = value
     }
 
     suspend fun setRecoveryConfigured(value: Boolean) =

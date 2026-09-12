@@ -139,7 +139,7 @@ class SettingsViewModel(
             CloudSyncManager.RemoteState.KEY_MISSING -> SyncScreenState(error =
                 "The Drive folder exists, but its recovery key is missing. Your local notes are safe. Back up local notes and review the existing Drive data before setting up again.")
             CloudSyncManager.RemoteState.ERROR -> SyncScreenState(error =
-                "Couldn't verify the Drive folder and recovery key. Check your connection and Google account, then try again. Nothing was reset.")
+                status.error ?: "Couldn't verify the Drive folder and recovery key. Check your connection and Google account, then try again. Nothing was reset.")
         }
     }
 
@@ -171,7 +171,7 @@ class SettingsViewModel(
         val restart = _syncState.value.restartConfirmed
         _syncState.value = _syncState.value.copy(busy = true, passphraseError = null)
         applicationScope.launch(Dispatchers.Main.immediate) {
-            when (syncManager.provision(token, passphrase, method, restart)) {
+            when (val result = syncManager.provision(token, passphrase, method, restart)) {
                 CloudSyncManager.SetupResult.SUCCESS -> {
                     _syncState.value = SyncScreenState()
                     runSync(token)
@@ -184,6 +184,9 @@ class SettingsViewModel(
                 CloudSyncManager.SetupResult.ERROR -> _syncState.value = _syncState.value.copy(
                     busy = false,
                     passphraseError = "Couldn't finish Drive setup. Local notes are unchanged. Retry, or reconnect to resume an interrupted setup.",
+                )
+                is CloudSyncManager.SetupResult.Failure -> _syncState.value = _syncState.value.copy(
+                    busy = false, passphraseError = result.message,
                 )
             }
         }
@@ -200,7 +203,7 @@ class SettingsViewModel(
         }
         _syncState.value = _syncState.value.copy(busy = true, passphraseError = null)
         applicationScope.launch(Dispatchers.Main.immediate) {
-            when (syncManager.restore(token, passphrase)) {
+            when (val result = syncManager.restore(token, passphrase)) {
                 CloudSyncManager.RestoreResult.SUCCESS -> {
                     _syncState.value = SyncScreenState()
                     runSync(token)
@@ -213,6 +216,8 @@ class SettingsViewModel(
                     _syncState.value = SyncScreenState(error = "The Drive recovery key is missing. Your local notes are unchanged.")
                 CloudSyncManager.RestoreResult.ERROR ->
                     _syncState.value = _syncState.value.copy(busy = false, passphraseError = "Couldn't restore from Drive. Please try again.")
+                is CloudSyncManager.RestoreResult.Failure ->
+                    _syncState.value = _syncState.value.copy(busy = false, passphraseError = result.message)
             }
         }
     }

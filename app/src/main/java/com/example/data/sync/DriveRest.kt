@@ -6,8 +6,10 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /** Metadata for a note blob stored in the visible "MyNotes" sync folder. */
@@ -36,58 +38,44 @@ enum class DriveFolderStatus {
  * Covers the account probe, the visible sync folder, the hidden appData key envelope, and the
  * per-note blob list/upload/download/delete used by the two-way sync.
  */
-object DriveRest : DriveSyncRemote {
+object DriveRest : DriveRestClient()
 
-    private val client = OkHttpClient.Builder()
+open class DriveRestClient internal constructor(
+    private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(20, TimeUnit.SECONDS)
         .callTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
-        .build()
+        .build(),
+) : DriveSyncRemote {
 
-    /**
-     * Returns the email of the account the [accessToken] belongs to (via Drive's `about` endpoint),
-     * or null on any failure. A successful non-null result confirms the token is valid and the app
-     * is authorised for Drive. Retries a couple of times to ride out a transient network hiccup or
-     * a token that's still propagating right after (re)connecting.
-     */
-    override fun fetchAccountEmail(accessToken: String): String? {
-        repeat(3) { attempt ->
-            val email = fetchAccountEmailOnce(accessToken)
-            if (email != null) return email
-            if (attempt < 2) Thread.sleep(400)
-        }
-        return null
-    }
-
-    private fun fetchAccountEmailOnce(accessToken: String): String? = runCatching {
+    /** Reads the authorized account, preserving a sanitized failure for the recovery screen. */
+    override fun fetchAccountEmail(accessToken: String): String? = driveOperation("Checking Google account") {
         val request = Request.Builder()
             .url("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)")
             .header("Authorization", "Bearer $accessToken")
             .get()
             .build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
-            val body = response.body?.string() ?: return null
-            JSONObject(body).optJSONObject("user")?.optString("emailAddress")?.ifBlank { null }
-        }
-    }.getOrNull()
+        JSONObject(execSync(request, "Checking Google account")).optJSONObject("user")?.optString("emailAddress")?.ifBlank { null }
+            ?: throw DriveRequestException.invalidResponse("Checking Google account")
+    }
 
     // ---- Folders / files / appData (Slice 2) ------------------------------------
 
     private val jsonMedia = "application/json; charset=UTF-8".toMediaType()
     private val textMedia = "text/plain; charset=UTF-8".toMediaType()
     private val htmlMedia = "text/html; charset=UTF-8".toMediaType()
-    private const val FOLDER_MIME = "application/vnd.google-apps.folder"
+    private val FOLDER_MIME = "application/vnd.google-apps.folder"
 
-    override fun folderStatus(accessToken: String, folderId: String): DriveFolderStatus = try {
+    override fun folderStatus(accessToken: String, folderId: String): DriveFolderStatus = driveOperation("Checking sync folder") {
         val url = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
             .addPathSegment(folderId).addQueryParameter("fields", "id,mimeType,trashed").build()
         client.newCall(authGet(accessToken, url)).execute().use { response ->
+            if (response.code != 404) checkResponse(response, "Checking sync folder")
             DriveFolderStatus.fromResponse(response.code, response.body?.string())
         }
-    } catch (_: Exception) { DriveFolderStatus.UNKNOWN }
+    }
 
     override fun lookupFolder(accessToken: String, name: String): DriveFileLookup =
         lookupFile(accessToken, "name = '${esc(name)}' and mimeType = '$FOLDER_MIME' and trashed = false", "drive")
@@ -96,37 +84,49 @@ object DriveRest : DriveSyncRemote {
         lookupFile(accessToken, "name = '${esc(name)}' and trashed = false", "appDataFolder")
 
     private fun lookupFile(accessToken: String, query: String, space: String): DriveFileLookup = runCatching {
-        val url = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
-            .addQueryParameter("q", query).addQueryParameter("spaces", space)
-            .addQueryParameter("fields", "files(id),incompleteSearch,nextPageToken")
-            .addQueryParameter("pageSize", "2").build()
-        val result = JSONObject(exec(authGet(accessToken, url)) ?: return DriveFileLookup.Unknown)
-        if (result.optBoolean("incompleteSearch") || result.optString("nextPageToken").isNotBlank()) return DriveFileLookup.Unknown
-        val files = result.getJSONArray("files")
-        when (files.length()) {
-            0 -> DriveFileLookup.Missing
-            1 -> DriveFileLookup.Found(files.getJSONObject(0).getString("id").also { require(it.isNotBlank()) })
-            else -> DriveFileLookup.Unknown
-        }
-    }.getOrDefault(DriveFileLookup.Unknown)
+        val ids = linkedSetOf<String>()
+        val pageTokens = hashSetOf<String>()
+        var pageToken: String? = null
+        do {
+            val url = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
+                .addQueryParameter("q", query).addQueryParameter("spaces", space)
+                .addQueryParameter("fields", "kind,files(id),incompleteSearch,nextPageToken")
+                .addQueryParameter("pageSize", "100")
+                .apply { pageToken?.let { addQueryParameter("pageToken", it) } }.build()
+            val result = JSONObject(execSync(authGet(accessToken, url), if (space == "appDataFolder") "Looking up recovery data" else "Looking up sync folder"))
+            if (result.optBoolean("incompleteSearch")) return DriveFileLookup.Unknown
+            val files = if (result.has("files")) result.getJSONArray("files")
+                else if (result.optString("kind") == "drive#fileList") JSONArray()
+                else return DriveFileLookup.Unknown
+            for (index in 0 until files.length()) {
+                ids.add(files.getJSONObject(index).getString("id").also { require(it.isNotBlank()) })
+                if (ids.size > 1) return DriveFileLookup.Unknown
+            }
+            pageToken = if (result.isNull("nextPageToken")) null else result.getString("nextPageToken").takeIf { it.isNotBlank() }
+            if (pageToken != null && (!pageTokens.add(pageToken) || pageTokens.size > 100)) return DriveFileLookup.Unknown
+        } while (pageToken != null)
+        ids.singleOrNull()?.let(DriveFileLookup::Found) ?: DriveFileLookup.Missing
+    }.getOrElse { if (it is DriveRequestException) throw it else DriveFileLookup.Unknown }
 
     override fun generateFileId(accessToken: String): String? = runCatching {
         val url = "https://www.googleapis.com/drive/v3/files/generateIds".toHttpUrl().newBuilder()
             .addQueryParameter("count", "1").addQueryParameter("space", "drive").build()
-        JSONObject(exec(authGet(accessToken, url)) ?: return null).getJSONArray("ids").getString(0)
-    }.getOrNull()
+        JSONObject(execSync(authGet(accessToken, url), "Reserving sync folder")).getJSONArray("ids").getString(0)
+    }.getOrElse { if (it is DriveRequestException) throw it else null }
 
     override fun createFolder(accessToken: String, name: String, fileId: String): Boolean {
         val metadata = JSONObject().put("id", fileId).put("name", name).put("mimeType", FOLDER_MIME)
         val request = Request.Builder().url("https://www.googleapis.com/drive/v3/files?fields=id")
             .header("Authorization", "Bearer $accessToken").post(metadata.toString().toRequestBody(jsonMedia)).build()
-        val created = exec(request)?.let { runCatching { JSONObject(it).getString("id") }.getOrNull() }
-        return created == fileId || folderStatus(accessToken, fileId) == DriveFolderStatus.PRESENT
+        val created = runCatching { JSONObject(execSync(request, "Creating sync folder")).getString("id") }
+        if (created.getOrNull() == fileId || folderStatus(accessToken, fileId) == DriveFolderStatus.PRESENT) return true
+        created.exceptionOrNull()?.let { throw it }
+        return false
     }
 
     /** Finds the visible "MyNotes" [name] folder, creating it if absent. Returns its id or null. */
     fun ensureFolder(accessToken: String, name: String): String? {
-        when (val found = lookupFolder(accessToken, name)) {
+        when (val found = runCatching { lookupFolder(accessToken, name) }.getOrNull() ?: return null) {
             is DriveFileLookup.Found -> return found.id
             DriveFileLookup.Unknown -> return null
             DriveFileLookup.Missing -> Unit
@@ -207,7 +207,7 @@ object DriveRest : DriveSyncRemote {
             .header("Authorization", "Bearer $accessToken")
             .post(multipart)
             .build()
-        return exec(create)?.let { JSONObject(it).optString("id").ifBlank { null } }
+        return JSONObject(execSync(create, "Saving encrypted recovery data")).optString("id").ifBlank { null }
     }
 
     /** Downloads the text content of [fileId], or null on failure. */
@@ -221,20 +221,46 @@ object DriveRest : DriveSyncRemote {
     }
 
     override fun downloadNote(accessToken: String, fileId: String): RemoteNoteDownload? = runCatching {
+        val downloaded = downloadFile(accessToken, fileId) ?: return null
+        downloaded.etag?.let { return RemoteNoteDownload(downloaded.content, it) }
+        val revision = fileRevision(accessToken, fileId) ?: return null
+        val verified = downloadFile(accessToken, fileId, revision.etag) ?: return null
+        if (fileRevision(accessToken, fileId) != revision) return null
+        RemoteNoteDownload(verified.content, revision.etag)
+    }.getOrElse { if (it is DriveRequestException) throw it else null }
+
+    private data class FileRevision(val etag: String, val version: String)
+    private data class DownloadedFile(val content: String, val etag: String?)
+
+    private fun fileRevision(accessToken: String, fileId: String): FileRevision? = driveOperation("Reading cloud revision") {
+        val url = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
+            .addPathSegment(fileId).addQueryParameter("fields", "id,version").build()
+        client.newCall(authGet(accessToken, url)).execute().use { response ->
+            checkResponse(response, "Reading cloud revision")
+            val metadata = JSONObject(response.body?.string() ?: return null)
+            if (metadata.getString("id") != fileId) return null
+            val etag = response.header("ETag")?.takeIf { it.isNotBlank() } ?: throw DriveRequestException.missingRevision()
+            val version = metadata.getString("version").takeIf { it.isNotBlank() } ?: return null
+            FileRevision(etag, version)
+        }
+    }
+
+    private fun downloadFile(accessToken: String, fileId: String, etag: String? = null): DownloadedFile? = driveOperation("Reading encrypted Drive data") {
         val request = Request.Builder().url("https://www.googleapis.com/drive/v3/files/$fileId?alt=media")
+            .apply { if (etag != null) header("If-Match", etag) }
             .header("Authorization", "Bearer $accessToken").get().build()
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return null
+            checkResponse(response, "Reading encrypted Drive data")
             val body = response.body ?: return null
             if (body.contentLength() > 48L * 1024 * 1024) return null
             val bytes = body.byteStream().use { com.example.data.share.ShareImportPolicy.readBounded(it, 48 * 1024 * 1024) }
-            RemoteNoteDownload(String(bytes, Charsets.UTF_8), response.header("ETag") ?: return null)
+            DownloadedFile(String(bytes, Charsets.UTF_8), response.header("ETag")?.takeIf { it.isNotBlank() })
         }
-    }.getOrNull()
+    }
 
     override fun updateCollection(accessToken: String, fileId: String, content: String, etag: String): Boolean =
         uploadMultipart(accessToken, "https://www.googleapis.com/upload/drive/v3/files/$fileId?uploadType=multipart&fields=id",
-            patch = true, metadata = JSONObject(), content = content, etag = etag) != null
+            patch = true, metadata = JSONObject(), content = content, etag = etag, operation = "Updating encrypted recovery data") != null
 
     /** Lists every non-trashed note blob in the visible [folderId], or null if the listing fails. */
     override fun listFolderNotes(accessToken: String, folderId: String): List<RemoteNoteMeta>? {
@@ -322,6 +348,7 @@ object DriveRest : DriveSyncRemote {
         metadata: JSONObject,
         content: String,
         etag: String? = null,
+        operation: String? = null,
     ): String? {
         val multipart = MultipartBody.Builder()
             .setType("multipart/related".toMediaType())
@@ -331,7 +358,8 @@ object DriveRest : DriveSyncRemote {
         val builder = Request.Builder().url(url).header("Authorization", "Bearer $accessToken")
         if (etag != null) builder.header("If-Match", etag)
         val request = (if (patch) builder.patch(multipart) else builder.post(multipart)).build()
-        return exec(request)?.let { runCatching { JSONObject(it).optString("id").ifBlank { null } }.getOrNull() }
+        val body = if (operation == null) exec(request) else execSync(request, operation)
+        return body?.let { runCatching { JSONObject(it).optString("id").ifBlank { null } }.getOrNull() }
     }
 
     // ---- Shareable link (plaintext copy as a Google Doc) ------------------------
@@ -379,6 +407,27 @@ object DriveRest : DriveSyncRemote {
 
     private fun authGet(accessToken: String, url: okhttp3.HttpUrl): Request =
         Request.Builder().url(url).header("Authorization", "Bearer $accessToken").get().build()
+
+    private inline fun <T> driveOperation(step: String, action: () -> T): T = try {
+        action()
+    } catch (failure: DriveRequestException) {
+        throw failure
+    } catch (_: IOException) {
+        throw DriveRequestException.network(step)
+    } catch (_: org.json.JSONException) {
+        throw DriveRequestException.invalidResponse(step)
+    }
+
+    private fun checkResponse(response: Response, step: String) {
+        if (!response.isSuccessful) throw DriveRequestException.http(step, response.code, response.peekBody(16_384).string())
+    }
+
+    private fun execSync(request: Request, step: String): String = driveOperation(step) {
+        client.newCall(request).execute().use { response ->
+            checkResponse(response, step)
+            response.body?.string() ?: throw DriveRequestException.invalidResponse(step)
+        }
+    }
 
     private fun exec(request: Request): String? = try {
         client.newCall(request).execute().use { r -> if (r.isSuccessful) r.body?.string() else null }

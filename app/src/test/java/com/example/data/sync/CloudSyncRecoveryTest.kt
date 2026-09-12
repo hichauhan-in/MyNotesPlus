@@ -31,6 +31,14 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.withTimeout
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -347,6 +355,78 @@ class CloudSyncRecoveryTest {
         }
     }
 
+    @Test fun freshPinSetupAndReconnectWorkThroughTheRealRestClient() = runBlocking {
+        verifyRestSetup(DriveRecoveryMethod.PIN, "001234")
+    }
+
+    @Test fun freshPassphraseSetupAndReconnectWorkThroughTheRealRestClient() = runBlocking {
+        verifyRestSetup(DriveRecoveryMethod.PASSPHRASE, "my new recovery phrase")
+    }
+
+    private suspend fun verifyRestSetup(method: DriveRecoveryMethod, credential: String) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val restManager = CloudSyncManager(settings, notes, FolderRepository(database.folderDao(), database.noteDao(), context, database), reminders, context, drive.restClient())
+        val note = Note(UUID.randomUUID().toString(), "Retained local note", "My saved content", 100, 100)
+        notes.saveNote(note)
+        assertEquals(CloudSyncManager.RemoteState.NO_ENVELOPE, restManager.connect(token).state)
+        val secret = credential.toCharArray()
+        assertEquals(CloudSyncManager.SetupResult.SUCCESS, restManager.provision(token, secret, method))
+        assertTrue(secret.all { it == '\u0000' })
+        assertEquals(method, drive.envelope().method)
+        assertTrue(restManager.syncNow(token) is CloudSyncManager.SyncOutcome.Success)
+        assertTrue(drive.noteRecords[drive.envelope().folderId].orEmpty().containsKey(note.id))
+        assertEquals(note.content, notes.getNoteById(note.id)?.content)
+
+        restManager.forgetLocalKeys()
+        val reconnect = restManager.connect(token)
+        assertEquals(CloudSyncManager.RemoteState.HAS_ENVELOPE, reconnect.state)
+        assertEquals(method, reconnect.method)
+        assertFalse(reconnect.canUseLocalKey)
+        assertEquals(CloudSyncManager.RestoreResult.SUCCESS, restManager.restore(token, credential.toCharArray()))
+        assertTrue(restManager.syncNow(token) is CloudSyncManager.SyncOutcome.Success)
+        assertFalse(requireNotNull(notes.getNoteById(note.id)).isTrashed)
+        assertEquals(0, drive.deletedFiles)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun authorizedAccountWithDeniedKeyStorageShowsTheGoogleFailureInSettings() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        var requestsToWrite = 0
+        val client = DriveRestClient(OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            val allowed = request.url.encodedPath.endsWith("/about")
+            if (request.method != "GET") requestsToWrite++
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(if (allowed) 200 else 403).message("Test response")
+                .body((if (allowed) """{"user":{"emailAddress":"personal@example.test"}}"""
+                    else """{"error":{"message":"private response","errors":[{"reason":"insufficientPermissions"}]}}""").toResponseBody()).build()
+        }.build())
+        val restManager = CloudSyncManager(settings, notes, FolderRepository(database.folderDao(), database.noteDao(), context, database), reminders, context, client)
+        val dispatcher = UnconfinedTestDispatcher()
+        Dispatchers.setMain(dispatcher)
+        val store = ViewModelStore()
+        val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        try {
+            val viewModel = SettingsViewModel(settings, restManager, scope)
+            store.put("settings", viewModel)
+            viewModel.onDriveAuthorized(token)
+            val state = withTimeout(10_000) { viewModel.syncState.first { !it.connecting } }
+            assertTrue(requireNotNull(state.error).contains("Looking up recovery data (HTTP 403)"))
+            assertFalse(state.error.contains("private response"))
+            assertNull(state.passphrasePrompt)
+            assertFalse(state.confirmRestart)
+            val secret = "0012".toCharArray()
+            val result = restManager.provision(token, secret, DriveRecoveryMethod.PIN)
+            assertTrue(result is CloudSyncManager.SetupResult.Failure)
+            assertTrue(secret.all { it == '\u0000' })
+            assertEquals(0, requestsToWrite)
+            assertNull(settings.wrappedDataKey())
+        } finally {
+            store.clear()
+            scope.cancel()
+            Dispatchers.resetMain()
+        }
+    }
+
     private class RecoveryDrive : DriveSyncRemote {
         data class Stored(val id: String, val name: String, var content: String, var revision: Int = 1) {
             val etag: String get() = "revision-$revision"
@@ -368,6 +448,69 @@ class CloudSyncRecoveryTest {
         fun named(name: String): Stored? = files.values.singleOrNull { it.name == name }
         fun envelope(): DriveRecoveryEnvelope = DriveRecoveryEnvelope.decode(requireNotNull(named("mynotes.key.json")).content)
         fun replaceEnvelope(envelope: DriveRecoveryEnvelope) { requireNotNull(named("mynotes.key.json")).apply { content = envelope.encode(); revision++ } }
+
+        fun restClient() = DriveRestClient(OkHttpClient.Builder().addInterceptor { chain -> httpResponse(chain.request()) }.build())
+
+        private fun httpResponse(request: Request): Response {
+            fun response(body: String, code: Int = 200, etag: String? = null): Response =
+                Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(code).message("Test response")
+                    .body(body.toResponseBody()).apply { if (etag != null) header("ETag", etag) }.build()
+            val path = request.url.encodedPath
+            if (path.endsWith("/about")) return response(JSONObject().put("user", JSONObject().put("emailAddress", email)).toString())
+            if (path.endsWith("/generateIds")) return response(JSONObject().put("ids", JSONArray().put(generateFileId("http"))).toString())
+            if (request.method == "GET" && path == "/drive/v3/files") {
+                val query = requireNotNull(request.url.queryParameter("q"))
+                val folder = folders.keys.singleOrNull { query == "'$it' in parents and trashed = false" }
+                if (folder != null) {
+                    val items = JSONArray()
+                    noteRecords[folder].orEmpty().values.forEach { note ->
+                        items.put(JSONObject().put("id", note.fileId).put("name", "${note.noteId}.mnote")
+                            .put("appProperties", JSONObject().put("noteId", note.noteId).put("updatedAt", note.updatedAt.toString())))
+                    }
+                    return response(JSONObject().put("kind", "drive#fileList").put("files", items).toString())
+                }
+                if (request.url.queryParameter("pageToken") == null) return response("""{"kind":"drive#fileList","nextPageToken":"last-page"}""")
+                val ids = if (request.url.queryParameter("spaces") == "appDataFolder") {
+                    files.values.filter { query == "name = '${it.name}' and trashed = false" }.map { it.id }
+                } else folders.filterValues { it == DriveFolderStatus.PRESENT }.keys.toList()
+                val result = JSONObject().put("kind", "drive#fileList").put("incompleteSearch", false)
+                if (ids.isNotEmpty()) result.put("files", JSONArray(ids.map { JSONObject().put("id", it) }))
+                return response(result.toString())
+            }
+            val id = request.url.pathSegments.last()
+            if (request.method == "GET") {
+                if (folders[id] == DriveFolderStatus.PRESENT) return response(JSONObject().put("id", id)
+                    .put("mimeType", "application/vnd.google-apps.folder").put("trashed", false).toString())
+                val file = files[id] ?: return response("{}", 404)
+                if (request.url.queryParameter("alt") == "media") {
+                    if (request.header("If-Match")?.let { it != file.etag } == true) return response("{}", 412)
+                    return response(file.content)
+                }
+                return response(JSONObject().put("id", id).put("version", file.revision.toString()).toString(), etag = file.etag)
+            }
+            if (request.method == "POST" && path == "/drive/v3/files") {
+                val metadata = JSONObject(Buffer().also { requireNotNull(request.body).writeTo(it) }.readUtf8())
+                val folderId = metadata.getString("id")
+                check(createFolder("http", metadata.getString("name"), folderId))
+                return response(JSONObject().put("id", folderId).toString())
+            }
+            val multipart = request.body as MultipartBody
+            val metadata = JSONObject(Buffer().also { multipart.part(0).body.writeTo(it) }.readUtf8())
+            val content = Buffer().also { multipart.part(1).body.writeTo(it) }.readUtf8()
+            if (request.method == "PATCH") {
+                return if (updateCollection("http", id, content, requireNotNull(request.header("If-Match")))) response(JSONObject().put("id", id).toString())
+                else response("{}", 412)
+            }
+            val parent = metadata.getJSONArray("parents").getString(0)
+            val created = if (parent == "appDataFolder") createAppDataFile("http", metadata.getString("name"), content)
+                else {
+                    val properties = metadata.getJSONObject("appProperties")
+                    putNoteFile("http", parent, properties.getString("noteId"), metadata.getString("name"), content,
+                        properties.getString("updatedAt").toLong(), null, null)
+                }
+            return response(JSONObject().put("id", requireNotNull(created)).toString())
+        }
+
         override fun fetchAccountEmail(accessToken: String): String? = email.takeUnless { offline }
         override fun lookupFolder(accessToken: String, name: String): DriveFileLookup {
             if (offline) return DriveFileLookup.Unknown

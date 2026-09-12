@@ -902,6 +902,51 @@ private fun SettingsDivider() {
  */
 @Composable
 private fun AppInfoDialog(onDismiss: () -> Unit) {
+    SettingsInfoDialog("MyNotes+", "Private notes, truly yours", Icons.Rounded.AutoAwesome, onDismiss) {
+        AppInfoSection(icon = Icons.Rounded.AutoAwesome, title = "Our mission") {
+            AppInfoParagraph(
+                "MyNotes+ is built on one idea: your notes belong to you and no one else. " +
+                    "Write, plan and remember without a required sign-in or advertising. " +
+                    "Optional Google services have their own data practices, explained in the privacy policy.",
+            )
+        }
+        AppInfoSection(icon = Icons.Rounded.Bolt, title = "Why you'll love it") {
+            AppInfoBullet("Note content is encrypted on your device.")
+            AppInfoBullet("Create and read notes offline; optional models may need a download.")
+            AppInfoBullet("No MyNotes account required and no advertising.")
+            AppInfoBullet("Organise your way with books, tags, pins and colours.")
+        }
+        AppInfoSection(icon = Icons.Rounded.Widgets, title = "What's inside") {
+            AppInfoBullet("Notes, checklists, tables and callouts.")
+            AppInfoBullet("Boards and expense trackers.")
+            AppInfoBullet("Photos, voice notes and reusable templates.")
+            AppInfoBullet("Recoverable Trash with adjustable retention.")
+        }
+        AppInfoSection(icon = Icons.Rounded.Shield, title = "Privacy & safety") {
+            AppInfoParagraph(
+                "Note content uses AES-256-GCM and Android Keystore keys. Metadata and temporary " +
+                    "capture/export files are described in the privacy policy. Drive sync encrypts content; " +
+                    "public links are readable copies. AI processing is local, but Google SDKs can send diagnostics.",
+            )
+        }
+        AppInfoSection(icon = Icons.Rounded.Lock, title = "In your control") {
+            AppInfoParagraph(
+                "Add an optional fingerprint or screen-lock to open the app, protect previews in the " +
+                    "recent-apps switcher, and delete anything whenever you like. It's your space, on your terms.",
+            )
+        }
+    }
+}
+
+@Composable
+internal fun SettingsInfoDialog(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    onDismiss: () -> Unit,
+    closeDescription: String = "Close",
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -939,7 +984,7 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.AutoAwesome,
+                            imageVector = icon,
                             contentDescription = null,
                             tint = Color.White,
                             modifier = Modifier.size(26.dp),
@@ -948,13 +993,13 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            text = "MyNotes+",
+                            text = title,
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = Color.White,
                         )
                         Text(
-                            text = "Private notes, truly yours",
+                            text = subtitle,
                             style = MaterialTheme.typography.bodyMedium,
                             color = Color.White.copy(alpha = 0.85f),
                         )
@@ -969,7 +1014,7 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Close,
-                            contentDescription = "Close",
+                            contentDescription = closeDescription,
                             tint = Color.White,
                             modifier = Modifier.size(20.dp),
                         )
@@ -983,47 +1028,15 @@ private fun AppInfoDialog(onDismiss: () -> Unit) {
                         .fillMaxWidth()
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 22.dp, vertical = 22.dp),
-                ) {
-                    AppInfoSection(icon = Icons.Rounded.AutoAwesome, title = "Our mission") {
-                        AppInfoParagraph(
-                            "MyNotes+ is built on one idea: your notes belong to you and no one else. " +
-                                "Write, plan and remember without a required sign-in or advertising. " +
-                                "Optional Google services have their own data practices, explained in the privacy policy.",
-                        )
-                    }
-                    AppInfoSection(icon = Icons.Rounded.Bolt, title = "Why you'll love it") {
-                        AppInfoBullet("Note content is encrypted on your device.")
-                        AppInfoBullet("Create and read notes offline; optional models may need a download.")
-                        AppInfoBullet("No MyNotes account required and no advertising.")
-                        AppInfoBullet("Organise your way with books, tags, pins and colours.")
-                    }
-                    AppInfoSection(icon = Icons.Rounded.Widgets, title = "What's inside") {
-                        AppInfoBullet("Notes, checklists, tables and callouts.")
-                        AppInfoBullet("Boards and expense trackers.")
-                        AppInfoBullet("Photos, voice notes and reusable templates.")
-                        AppInfoBullet("Recoverable Trash with adjustable retention.")
-                    }
-                    AppInfoSection(icon = Icons.Rounded.Shield, title = "Privacy & safety") {
-                        AppInfoParagraph(
-                            "Note content uses AES-256-GCM and Android Keystore keys. Metadata and temporary " +
-                                "capture/export files are described in the privacy policy. Drive sync encrypts content; " +
-                                "public links are readable copies. AI processing is local, but Google SDKs can send diagnostics.",
-                        )
-                    }
-                    AppInfoSection(icon = Icons.Rounded.Lock, title = "In your control") {
-                        AppInfoParagraph(
-                            "Add an optional fingerprint or screen-lock to open the app, protect previews in the " +
-                                "recent-apps switcher, and delete anything whenever you like. It's your space, on your terms.",
-                        )
-                    }
-                }
+                    content = content,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun AppInfoSection(
+internal fun AppInfoSection(
     icon: ImageVector,
     title: String,
     content: @Composable () -> Unit,
@@ -1049,7 +1062,7 @@ private fun AppInfoSection(
 }
 
 @Composable
-private fun AppInfoParagraph(text: String) {
+internal fun AppInfoParagraph(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodyMedium,

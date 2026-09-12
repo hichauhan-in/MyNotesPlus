@@ -42,13 +42,26 @@ class CloudSyncManager(
 ) {
 
     enum class RemoteState { NO_ENVELOPE, HAS_ENVELOPE, FOLDER_MISSING, KEY_MISSING, ERROR }
-    enum class RestoreResult { SUCCESS, WRONG_PASSPHRASE, FOLDER_MISSING, KEY_MISSING, ERROR }
-    enum class SetupResult { SUCCESS, STATE_CHANGED, ERROR }
+    sealed interface RestoreResult {
+        data object SUCCESS : RestoreResult
+        data object WRONG_PASSPHRASE : RestoreResult
+        data object FOLDER_MISSING : RestoreResult
+        data object KEY_MISSING : RestoreResult
+        data object ERROR : RestoreResult
+        data class Failure(val message: String) : RestoreResult
+    }
+    sealed interface SetupResult {
+        data object SUCCESS : SetupResult
+        data object STATE_CHANGED : SetupResult
+        data object ERROR : SetupResult
+        data class Failure(val message: String) : SetupResult
+    }
 
     data class RecoveryStatus(
         val state: RemoteState,
         val method: DriveRecoveryMethod = DriveRecoveryMethod.PASSPHRASE,
         val canUseLocalKey: Boolean = false,
+        val error: String? = null,
     )
 
     private data class EnvelopeRecord(val fileId: String, val etag: String, val envelope: DriveRecoveryEnvelope)
@@ -132,6 +145,7 @@ class CloudSyncManager(
                 }
                 recoveryStatus(inspect(accessToken))
             } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (failure: DriveRequestException) { RecoveryStatus(RemoteState.ERROR, error = failure.userMessage) }
             catch (_: Exception) { RecoveryStatus(RemoteState.ERROR) }
         }
     }
@@ -227,7 +241,8 @@ class CloudSyncManager(
                         }
                         if (readEnvelope(accessToken)?.envelope?.identity != setup.envelope.identity) return@withContext SetupResult.STATE_CHANGED
                         if (finishPending(accessToken, setup)) SetupResult.SUCCESS else SetupResult.ERROR
-                    } catch (_: Exception) { SetupResult.ERROR }
+                    } catch (failure: DriveRequestException) { SetupResult.Failure(failure.userMessage) }
+                    catch (_: Exception) { SetupResult.ERROR }
                 }
             }
         } finally { passphrase.fill('\u0000') }
@@ -264,6 +279,7 @@ class CloudSyncManager(
                             RestoreResult.SUCCESS
                         } finally { key.fill(0) }
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (failure: DriveRequestException) { RestoreResult.Failure(failure.userMessage) }
                     catch (_: Exception) { RestoreResult.ERROR }
                 }
             }

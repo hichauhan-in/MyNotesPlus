@@ -50,6 +50,15 @@
 - Conditional key writes and state rechecks reject a folder restored during reset preparation or a key replaced during note listing. Drive is not a transactional database; live provider behavior and multi-device timing still require signed-device verification.
 - Tests cover deleted legacy folders, restore-from-Trash checks, explicit reset approval/cancellation, interrupted setup, rejected key writes, stale-device keys, account switching, new setup, wrong credentials, credential bounds and the Settings-to-PIN-unlock flow. Dialog tests retain SDK 35 without explicit screen qualifiers to avoid Robolectric issue 8460.
 
+## Drive And Settings Follow-up (12 September)
+
+- Folder/recovery lookups now follow Drive pagination, including empty intermediate pages. A completed response identified as `drive#fileList` can omit an empty `files` array. Incomplete searches, malformed responses, multiple matches and repeated page tokens remain blocked rather than authorizing a new key.
+- A successful media download without its own ETag can use the file metadata's ETag and version. The content is downloaded again with that validator and the metadata revision is checked afterward. Missing validators or changed revisions still prevent unsafe use of the result; conditional writes are not removed.
+- Connection, setup and restore report the failed Drive step and a sanitized HTTP/network explanation. Permission denial, a disabled Google Cloud Drive API, quota limits and expired authorization no longer all look like a bad PIN/passphrase or generic verification failure. Raw response messages, tokens, credentials, account details and note content are not included in these diagnostics.
+- Regression tests now exercise the production REST client through an in-process HTTP interceptor, not only a fake sync interface. They cover empty/paginated accounts, metadata-only validators, full PIN/passphrase setup, note sync, disconnect/reconnect and permission-denied Settings routing. These tests do not authenticate to a live Google account or prove its API configuration.
+- Data controls shares Application information's branded full-height popup frame. Device storage, Manage Drive files and Google account permissions are full-width branded icon buttons with button semantics. Deletion warnings and destinations are preserved; a fixed close control and scrollable body are tested in light/dark themes and at Android's actual enlarged-font setting.
+- Keep the existing application ID, version/signing choices and narrow Drive scopes. Validate a newly signed closed-testing build against the affected Google account. No remote data deletion or unlink operation is performed by this change.
+
 ## Reminders
 
 - Delivery, completion and snooze are separate. A one-shot alert remains overdue until explicitly completed or disabled.

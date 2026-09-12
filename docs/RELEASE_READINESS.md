@@ -26,6 +26,12 @@ remain readable, while new setups require updated clients on other devices. Loca
 and older hidden recovery generations are retained separately. See [DAILY_USE_UPDATE.md](DAILY_USE_UPDATE.md)
 for the recovery flow, automated coverage and cloud-only data limitations.
 
+The 12 September follow-up fixes paginated/empty Drive lookups and downloads whose ETag is available
+only on metadata, with revision checks retained. HTTP-level tests cover new PIN/passphrase setup and
+reconnect; Settings now reports sanitized operation-specific Google failures. Data controls reuses the
+Application information popup frame with themed buttons. Live Google account configuration and signed
+device sync still require verification; simulated HTTP tests do not substitute for those gates.
+
 ## Implemented
 
 - Expenses use integer paise and explicit pending/completed transactions. Credits add to the source balance; expenses, savings and investments subtract; internal transfers debit and credit together. Budget-only records do not change balances.

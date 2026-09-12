@@ -33,7 +33,7 @@ enum class DriveFolderStatus {
 }
 
 /**
- * Thin Google Drive v3 REST client used by cloud sync. It only ever sends already-encrypted bytes,
+ * Google Drive REST client used by cloud sync. It only ever sends already-encrypted bytes,
  * and talks to Drive with a short-lived OAuth access token obtained via the Authorization API.
  * Covers the account probe, the visible sync folder, the hidden appData key envelope, and the
  * per-note blob list/upload/download/delete used by the two-way sync.
@@ -221,46 +221,46 @@ open class DriveRestClient internal constructor(
     }
 
     override fun downloadNote(accessToken: String, fileId: String): RemoteNoteDownload? = runCatching {
-        val downloaded = downloadFile(accessToken, fileId) ?: return null
-        downloaded.etag?.let { return RemoteNoteDownload(downloaded.content, it) }
         val revision = fileRevision(accessToken, fileId) ?: return null
-        val verified = downloadFile(accessToken, fileId, revision.etag) ?: return null
+        val content = downloadFile(accessToken, fileId) ?: return null
         if (fileRevision(accessToken, fileId) != revision) return null
-        RemoteNoteDownload(verified.content, revision.etag)
+        RemoteNoteDownload(content, revision.etag)
     }.getOrElse { if (it is DriveRequestException) throw it else null }
 
     private data class FileRevision(val etag: String, val version: String)
-    private data class DownloadedFile(val content: String, val etag: String?)
 
     private fun fileRevision(accessToken: String, fileId: String): FileRevision? = driveOperation("Reading cloud revision") {
-        val url = "https://www.googleapis.com/drive/v3/files".toHttpUrl().newBuilder()
-            .addPathSegment(fileId).addQueryParameter("fields", "id,version").build()
+        val url = "https://www.googleapis.com/drive/v2/files".toHttpUrl().newBuilder()
+            .addPathSegment(fileId).addQueryParameter("fields", "id,etag,version")
+            .addQueryParameter("updateViewedDate", "false").build()
         client.newCall(authGet(accessToken, url)).execute().use { response ->
             checkResponse(response, "Reading cloud revision")
             val metadata = JSONObject(response.body?.string() ?: return null)
             if (metadata.getString("id") != fileId) return null
-            val etag = response.header("ETag")?.takeIf { it.isNotBlank() } ?: throw DriveRequestException.missingRevision()
-            val version = metadata.getString("version").takeIf { it.isNotBlank() } ?: return null
+            val etag = metadata.optString("etag").takeIf(::isFileEtag) ?: throw DriveRequestException.missingRevision()
+            val version = metadata.getString("version").takeIf { it.toLongOrNull()?.let { number -> number >= 0 } == true } ?: return null
             FileRevision(etag, version)
         }
     }
 
-    private fun downloadFile(accessToken: String, fileId: String, etag: String? = null): DownloadedFile? = driveOperation("Reading encrypted Drive data") {
+    private fun isFileEtag(value: String): Boolean = value.length in 3..1024 && value.first() == '"' && value.last() == '"' &&
+        value.substring(1, value.lastIndex).all { it in '!'..'~' && it != '"' }
+
+    private fun downloadFile(accessToken: String, fileId: String): String? = driveOperation("Reading encrypted Drive data") {
         val request = Request.Builder().url("https://www.googleapis.com/drive/v3/files/$fileId?alt=media")
-            .apply { if (etag != null) header("If-Match", etag) }
             .header("Authorization", "Bearer $accessToken").get().build()
         client.newCall(request).execute().use { response ->
             checkResponse(response, "Reading encrypted Drive data")
             val body = response.body ?: return null
             if (body.contentLength() > 48L * 1024 * 1024) return null
             val bytes = body.byteStream().use { com.example.data.share.ShareImportPolicy.readBounded(it, 48 * 1024 * 1024) }
-            DownloadedFile(String(bytes, Charsets.UTF_8), response.header("ETag")?.takeIf { it.isNotBlank() })
+            String(bytes, Charsets.UTF_8)
         }
     }
 
     override fun updateCollection(accessToken: String, fileId: String, content: String, etag: String): Boolean =
-        uploadMultipart(accessToken, "https://www.googleapis.com/upload/drive/v3/files/$fileId?uploadType=multipart&fields=id",
-            patch = true, metadata = JSONObject(), content = content, etag = etag, operation = "Updating encrypted recovery data") != null
+        uploadMultipart(accessToken, "https://www.googleapis.com/upload/drive/v2/files/$fileId?uploadType=multipart&fields=id",
+            method = "PUT", metadata = JSONObject(), content = content, etag = etag, operation = "Updating encrypted recovery data") != null
 
     /** Lists every non-trashed note blob in the visible [folderId], or null if the listing fails. */
     override fun listFolderNotes(accessToken: String, folderId: String): List<RemoteNoteMeta>? {
@@ -315,23 +315,27 @@ open class DriveRestClient internal constructor(
             uploadMultipart(
                 accessToken,
                 "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
-                patch = false, metadata = meta, content = content,
+                method = "POST", metadata = meta, content = content,
             )
         } else {
-            val meta = JSONObject().put("appProperties", props)
+            val properties = JSONArray().put(JSONObject().put("key", "noteId").put("value", noteId).put("visibility", "PRIVATE"))
+                .put(JSONObject().put("key", "updatedAt").put("value", updatedAt.toString()).put("visibility", "PRIVATE"))
+            val meta = JSONObject().put("properties", properties)
             uploadMultipart(
                 accessToken,
-                "https://www.googleapis.com/upload/drive/v3/files/$existingId?uploadType=multipart&fields=id",
-                patch = true, metadata = meta, content = content, etag = etag,
+                "https://www.googleapis.com/upload/drive/v2/files/$existingId?uploadType=multipart&fields=id",
+                method = "PUT", metadata = meta, content = content, etag = etag,
             )
         }
     }
 
     /** Permanently deletes a Drive file (used when a note was deleted on another device). */
     override fun deleteFile(accessToken: String, fileId: String, etag: String?): Boolean = try {
+        if (etag != null) require(isFileEtag(etag))
+        val apiVersion = if (etag == null) "v3" else "v2"
         client.newCall(
             Request.Builder()
-                .url("https://www.googleapis.com/drive/v3/files/$fileId")
+                .url("https://www.googleapis.com/drive/$apiVersion/files/$fileId")
                 .header("Authorization", "Bearer $accessToken")
                 .apply { if (etag != null) header("If-Match", etag) }
                 .delete()
@@ -344,12 +348,13 @@ open class DriveRestClient internal constructor(
     private fun uploadMultipart(
         accessToken: String,
         url: String,
-        patch: Boolean,
+        method: String,
         metadata: JSONObject,
         content: String,
         etag: String? = null,
         operation: String? = null,
     ): String? {
+        if (method != "POST" && (etag == null || !isFileEtag(etag))) throw DriveRequestException.missingRevision()
         val multipart = MultipartBody.Builder()
             .setType("multipart/related".toMediaType())
             .addPart(metadata.toString().toRequestBody(jsonMedia))
@@ -357,7 +362,7 @@ open class DriveRestClient internal constructor(
             .build()
         val builder = Request.Builder().url(url).header("Authorization", "Bearer $accessToken")
         if (etag != null) builder.header("If-Match", etag)
-        val request = (if (patch) builder.patch(multipart) else builder.post(multipart)).build()
+        val request = builder.method(method, multipart).build()
         val body = if (operation == null) exec(request) else execSync(request, operation)
         return body?.let { runCatching { JSONObject(it).optString("id").ifBlank { null } }.getOrNull() }
     }

@@ -26,11 +26,15 @@ remain readable, while new setups require updated clients on other devices. Loca
 and older hidden recovery generations are retained separately. See [DAILY_USE_UPDATE.md](DAILY_USE_UPDATE.md)
 for the recovery flow, automated coverage and cloud-only data limitations.
 
-The 12 September follow-up fixes paginated/empty Drive lookups and downloads whose ETag is available
-only on metadata, with revision checks retained. HTTP-level tests cover new PIN/passphrase setup and
-reconnect; Settings now reports sanitized operation-specific Google failures. Data controls reuses the
-Application information popup frame with themed buttons. Live Google account configuration and signed
-device sync still require verification; simulated HTTP tests do not substitute for those gates.
+The 12 September follow-up fixes paginated/empty Drive lookups and removes the incorrect requirement
+for ETag response headers. Revision-safe reads now use the documented v2 JSON file `etag` and `version`
+around the media download; conditional uploads/deletes use the same v2 validator with `If-Match`.
+HTTP-level tests with no ETag headers cover PIN/passphrase setup, later note/template/reminder edits,
+legacy reconnect, resumable published setup and rejected conditional resets. Settings reports sanitized
+operation-specific Google failures. Update in place and retry connection before clearing a setup journal.
+Data controls reuses the Application information popup frame with themed buttons. Live Google account
+configuration, header-free responses and conditional-write behavior still require signed-device
+verification; simulated HTTP tests do not substitute for those gates.
 
 ## Implemented
 

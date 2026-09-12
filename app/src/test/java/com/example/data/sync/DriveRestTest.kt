@@ -1,10 +1,13 @@
 package com.example.data.sync
 
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okio.Buffer
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -78,20 +81,25 @@ class DriveRestTest {
         assertEquals(2, requests)
     }
 
-    @Test fun aSuccessfulKeyDownloadCanUseTheMetadataEtag() {
-        var guardedDownloads = 0
+    @Test fun aSuccessfulKeyDownloadUsesTheFileValidatorNotTheMediaHeader() {
+        var metadataReads = 0
         val remote = remote { request ->
             if (request.url.queryParameter("alt") == "media") {
-                if (request.header("If-Match") == "\"metadata-v7\"") guardedDownloads++
-                response(request, "encrypted recovery key")
+                assertNull(request.header("If-Match"))
+                response(request, "encrypted recovery key", etag = "\"media-only\"")
+            } else {
+                metadataReads++
+                assertEquals("/drive/v2/files/key-file", request.url.encodedPath)
+                assertEquals("id,etag,version", request.url.queryParameter("fields"))
+                assertEquals("false", request.url.queryParameter("updateViewedDate"))
+                response(request, """{"id":"key-file","version":"7","etag":"\"metadata-v7\""}""")
             }
-            else response(request, """{"id":"key-file","version":"7"}""", etag = "\"metadata-v7\"")
         }
         val download = remote.downloadNote("test-token", "key-file")
         assertNotNull(download)
         assertEquals("encrypted recovery key", download?.content)
         assertEquals("\"metadata-v7\"", download?.etag)
-        assertEquals(1, guardedDownloads)
+        assertEquals(2, metadataReads)
     }
 
     @Test fun aChangedMetadataRevisionRejectsTheDownloadedKey() {
@@ -100,7 +108,8 @@ class DriveRestTest {
             if (request.url.queryParameter("alt") == "media") response(request, "encrypted recovery key")
             else {
                 revisionReads++
-                response(request, """{"id":"key-file","version":"$revisionReads"}""", etag = "\"metadata-$revisionReads\"")
+                response(request, JSONObject().put("id", "key-file").put("version", revisionReads.toString())
+                    .put("etag", "\"metadata-$revisionReads\"").toString())
             }
         }
         assertNull(remote.downloadNote("test-token", "key-file"))
@@ -114,6 +123,96 @@ class DriveRestTest {
         }
         val failure = assertThrows(DriveRequestException::class.java) { remote.downloadNote("test-token", "key-file") }
         assertTrue(failure.userMessage.contains("MISSING_REVISION"))
+    }
+
+    @Test fun aKeyDownloadDoesNotDependOnHttpEtagHeaders() {
+        val requests = mutableListOf<Request>()
+        val remote = remote { request ->
+            requests.add(request)
+            when {
+                request.url.queryParameter("alt") == "media" -> response(request, "encrypted recovery key")
+                request.url.encodedPath == "/drive/v2/files/key-file" ->
+                    response(request, """{"id":"key-file","version":"7","etag":"\"file-v7\""}""")
+                else -> response(request, """{"id":"key-file","version":"7"}""")
+            }
+        }
+        val download = remote.downloadNote("test-token", "key-file")
+        assertNotNull(download)
+        assertEquals("encrypted recovery key", download?.content)
+        assertEquals("\"file-v7\"", download?.etag)
+        assertEquals(2, requests.count { it.url.encodedPath == "/drive/v2/files/key-file" })
+        assertTrue(requests.all { it.method == "GET" })
+    }
+
+    @Test fun metadataWithoutAFileValidatorNeverUsesTheVersionOrWildcardInstead() {
+        listOf("", "*", "7", "W/\"weak\"").forEach { invalid ->
+            var downloads = 0
+            val remote = remote { request ->
+                if (request.url.queryParameter("alt") == "media") downloads++
+                response(request, JSONObject().put("id", "key-file").put("version", "7").put("etag", invalid).toString())
+            }
+            assertThrows(DriveRequestException::class.java) { remote.downloadNote("test-token", "key-file") }
+            assertEquals(0, downloads)
+        }
+    }
+
+    @Test fun collectionUpdatesUseTheMatchingV2ConditionalEndpoint() {
+        val requests = mutableListOf<Request>()
+        val remote = remote { request ->
+            requests.add(request)
+            response(request, """{"id":"key-file"}""")
+        }
+        assertTrue(remote.updateCollection("test-token", "key-file", "new encrypted key", "\"file-v7\""))
+        val request = requests.single()
+        assertEquals("PUT", request.method)
+        assertEquals("/upload/drive/v2/files/key-file", request.url.encodedPath)
+        assertEquals("\"file-v7\"", request.header("If-Match"))
+        assertEquals("multipart", request.url.queryParameter("uploadType"))
+    }
+
+    @Test fun conditionalNoteUpdatesPreservePrivateSyncProperties() {
+        val remote = remote { request ->
+            assertEquals("PUT", request.method)
+            assertEquals("/upload/drive/v2/files/note-file", request.url.encodedPath)
+            assertEquals("\"note-v2\"", request.header("If-Match"))
+            val multipart = request.body as MultipartBody
+            val metadata = JSONObject(Buffer().also { multipart.part(0).body.writeTo(it) }.readUtf8())
+            assertFalse(metadata.has("appProperties"))
+            val properties = metadata.getJSONArray("properties")
+            val values = (0 until properties.length()).associate { index ->
+                val property = properties.getJSONObject(index)
+                assertEquals("PRIVATE", property.getString("visibility"))
+                property.getString("key") to property.getString("value")
+            }
+            assertEquals(mapOf("noteId" to "local-note", "updatedAt" to "12345"), values)
+            assertEquals("encrypted note", Buffer().also { multipart.part(1).body.writeTo(it) }.readUtf8())
+            response(request, """{"id":"note-file"}""")
+        }
+        assertEquals("note-file", remote.putNoteFile("test-token", "folder", "local-note", "local-note.mnote", "encrypted note", 12345, "note-file", "\"note-v2\""))
+    }
+
+    @Test fun rejectedConditionalWritesNeverRetryWithoutTheValidator() {
+        val requests = mutableListOf<Request>()
+        val remote = remote { request ->
+            requests.add(request)
+            response(request, "{}", 412)
+        }
+        assertThrows(DriveRequestException::class.java) { remote.updateCollection("test-token", "key-file", "new key", "\"stale\"") }
+        assertNull(remote.putNoteFile("test-token", "folder", "note", "note.mnote", "new note", 12345, "note-file", "\"stale\""))
+        assertFalse(remote.deleteFile("test-token", "note-file", "\"stale\""))
+        assertEquals(3, requests.size)
+        assertTrue(requests.all { it.header("If-Match") == "\"stale\"" && it.url.encodedPath.contains("/drive/v2/") })
+    }
+
+    @Test fun missingOrUnsafeWriteValidatorsNeverSendARequest() {
+        var requests = 0
+        val remote = remote { request -> requests++; response(request, "{}") }
+        listOf("", "*", "7").forEach { invalid ->
+            assertThrows(DriveRequestException::class.java) { remote.updateCollection("test-token", "key-file", "content", invalid) }
+            assertFalse(remote.deleteFile("test-token", "note-file", invalid))
+        }
+        assertThrows(DriveRequestException::class.java) { remote.putNoteFile("test-token", "folder", "note", "note.mnote", "content", 1, "note-file", null) }
+        assertEquals(0, requests)
     }
 
     @Test fun googlePermissionFailuresExposeTheStepButNeverRawResponseDetails() {

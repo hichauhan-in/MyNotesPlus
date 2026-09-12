@@ -363,11 +363,18 @@ class CloudSyncRecoveryTest {
         verifyRestSetup(DriveRecoveryMethod.PASSPHRASE, "my new recovery phrase")
     }
 
-    private suspend fun verifyRestSetup(method: DriveRecoveryMethod, credential: String) {
+    private fun managerUsingRest(): CloudSyncManager {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val restManager = CloudSyncManager(settings, notes, FolderRepository(database.folderDao(), database.noteDao(), context, database), reminders, context, drive.restClient())
+        return CloudSyncManager(settings, notes, FolderRepository(database.folderDao(), database.noteDao(), context, database), reminders, context, drive.restClient())
+    }
+
+    private suspend fun verifyRestSetup(method: DriveRecoveryMethod, credential: String) {
+        val restManager = managerUsingRest()
         val note = Note(UUID.randomUUID().toString(), "Retained local note", "My saved content", 100, 100)
+        val reminder = Reminder(id = "rest-reminder", title = "First reminder", triggerAt = System.currentTimeMillis() + 100_000)
         notes.saveNote(note)
+        settings.addTemplate(CustomTemplate(name = "First template", iconKey = "note", content = "Before sync"))
+        reminders.save(reminder)
         assertEquals(CloudSyncManager.RemoteState.NO_ENVELOPE, restManager.connect(token).state)
         val secret = credential.toCharArray()
         assertEquals(CloudSyncManager.SetupResult.SUCCESS, restManager.provision(token, secret, method))
@@ -377,6 +384,22 @@ class CloudSyncRecoveryTest {
         assertTrue(drive.noteRecords[drive.envelope().folderId].orEmpty().containsKey(note.id))
         assertEquals(note.content, notes.getNoteById(note.id)?.content)
 
+        val edited = requireNotNull(notes.getNoteById(note.id)).copy(content = "Edited after first sync")
+        notes.saveNote(edited)
+        val savedStamp = requireNotNull(notes.getNoteById(note.id)).updatedAt
+        settings.addTemplate(CustomTemplate(name = "Second template", iconKey = "note", content = "After sync"))
+        reminders.save(reminder.copy(title = "Edited reminder", updatedAt = reminder.updatedAt + 1_000))
+        assertTrue(restManager.syncNow(token) is CloudSyncManager.SyncOutcome.Success)
+        assertEquals(3, drive.conditionalWrites)
+        assertEquals(2, settings.allTemplatesForSync().size)
+        val remoteNote = requireNotNull(drive.noteRecords[drive.envelope().folderId]?.get(note.id))
+        assertEquals(savedStamp, remoteNote.updatedAt)
+        val key = requireNotNull(drive.envelope().unlock(credential.toCharArray()))
+        try {
+            val content = requireNotNull(SyncCrypto.decrypt(SyncCrypto.decodeBase64(requireNotNull(drive.files[remoteNote.fileId]).content), key))
+            assertEquals(edited.content, JSONObject(String(content, Charsets.UTF_8)).getString("content"))
+        } finally { key.fill(0) }
+
         restManager.forgetLocalKeys()
         val reconnect = restManager.connect(token)
         assertEquals(CloudSyncManager.RemoteState.HAS_ENVELOPE, reconnect.state)
@@ -385,7 +408,78 @@ class CloudSyncRecoveryTest {
         assertEquals(CloudSyncManager.RestoreResult.SUCCESS, restManager.restore(token, credential.toCharArray()))
         assertTrue(restManager.syncNow(token) is CloudSyncManager.SyncOutcome.Success)
         assertFalse(requireNotNull(notes.getNoteById(note.id)).isTrashed)
+        assertEquals(edited.content, notes.getNoteById(note.id)?.content)
         assertEquals(0, drive.deletedFiles)
+    }
+
+    @Test fun setupPublishedBeforeMissingRevisionCanResumeWithoutANewCredential() = runBlocking {
+        val restManager = managerUsingRest()
+        val note = Note(UUID.randomUUID().toString(), "Saved before setup", "Do not lose this", 100, 100)
+        notes.saveNote(note)
+        assertEquals(CloudSyncManager.RemoteState.NO_ENVELOPE, restManager.connect(token).state)
+        drive.omitFileEtag = true
+        val failed = restManager.provision(token, "0012".toCharArray(), DriveRecoveryMethod.PIN)
+        assertTrue(failed is CloudSyncManager.SetupResult.Failure && failed.message.contains("MISSING_REVISION"))
+        val published = drive.envelope()
+        assertNotNull(settings.pendingDriveSetup())
+        assertNull(settings.wrappedDataKey())
+        assertFalse(drive.folders.values.any { it == DriveFolderStatus.PRESENT })
+
+        drive.omitFileEtag = false
+        val resumed = restManager.connect(token)
+        assertEquals(CloudSyncManager.RemoteState.HAS_ENVELOPE, resumed.state)
+        assertTrue(resumed.canUseLocalKey)
+        assertEquals(DriveRecoveryMethod.PIN, resumed.method)
+        assertEquals(published.identity, drive.envelope().identity)
+        assertEquals(published.identity, settings.snapshot().driveKeyIdentity)
+        assertEquals(1, drive.generatedFolders)
+        assertEquals(1, drive.files.values.count { it.name == "mynotes.key.json" })
+        assertNull(settings.pendingDriveSetup())
+        assertTrue(restManager.syncNow(token) is CloudSyncManager.SyncOutcome.Success)
+        assertEquals(note.content, notes.getNoteById(note.id)?.content)
+        assertFalse(requireNotNull(notes.getNoteById(note.id)).isTrashed)
+    }
+
+    @Test fun aLegacyPassphraseAccountReconnectsWithoutEtagHeaders() = runBlocking {
+        val (note, original) = existing(present = true, legacy = true)
+        val restManager = managerUsingRest()
+        restManager.forgetLocalKeys()
+        val state = restManager.connect(token)
+        assertEquals(CloudSyncManager.RemoteState.HAS_ENVELOPE, state.state)
+        assertEquals(DriveRecoveryMethod.PASSPHRASE, state.method)
+        assertFalse(state.canUseLocalKey)
+        assertEquals(CloudSyncManager.RestoreResult.SUCCESS, restManager.restore(token, "old phrase".toCharArray()))
+        assertTrue(restManager.syncNow(token) is CloudSyncManager.SyncOutcome.Success)
+        assertEquals(original.identity, drive.envelope().identity)
+        assertEquals(note.content, notes.getNoteById(note.id)?.content)
+        assertEquals(0, drive.generatedFolders)
+    }
+
+    @Test fun confirmedRestartUsesARealConditionalKeyUpdateWithoutHeaders() = runBlocking {
+        val (note, original) = existing(present = false, legacy = true)
+        val restManager = managerUsingRest()
+        assertEquals(CloudSyncManager.SetupResult.SUCCESS, restManager.provision(token, "0099".toCharArray(), DriveRecoveryMethod.PIN, true))
+        assertNotEquals(original.identity, drive.envelope().identity)
+        assertEquals(1, drive.conditionalWrites)
+        assertEquals(drive.envelope().identity, settings.snapshot().driveKeyIdentity)
+        assertTrue(restManager.syncNow(token) is CloudSyncManager.SyncOutcome.Success)
+        assertEquals(note.content, notes.getNoteById(note.id)?.content)
+        assertEquals(0, drive.deletedFiles)
+    }
+
+    @Test fun rejectedConditionalRestartKeepsTheOriginalKeyAndLocalCheckpoint() = runBlocking {
+        val (_, original) = existing(present = false)
+        val localKey = settings.wrappedDataKey()
+        val checkpoints = settings.syncedNoteVersions()
+        val restManager = managerUsingRest()
+        drive.rejectKeyUpdate = true
+        val result = restManager.provision(token, "0099".toCharArray(), DriveRecoveryMethod.PIN, true)
+        assertTrue(result is CloudSyncManager.SetupResult.Failure && result.message.contains("HTTP 412"))
+        assertEquals(1, drive.conditionalWrites)
+        assertEquals(original.identity, drive.envelope().identity)
+        assertEquals(localKey, settings.wrappedDataKey())
+        assertEquals(checkpoints, settings.syncedNoteVersions())
+        assertFalse(drive.folders.values.any { it == DriveFolderStatus.PRESENT })
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -429,13 +523,15 @@ class CloudSyncRecoveryTest {
 
     private class RecoveryDrive : DriveSyncRemote {
         data class Stored(val id: String, val name: String, var content: String, var revision: Int = 1) {
-            val etag: String get() = "revision-$revision"
+            val etag: String get() = "\"revision-$revision\""
         }
         var email = "personal@example.test"
         var offline = false
         var failFolderCreation = false
         var rejectKeyUpdate = false
         var deleteFolderOnList = false
+        var omitFileEtag = false
+        var conditionalWrites = 0
         var onRecoveryArchived: (() -> Unit)? = null
         var onNotesListed: (() -> Unit)? = null
         var generatedFolders = 0
@@ -452,9 +548,9 @@ class CloudSyncRecoveryTest {
         fun restClient() = DriveRestClient(OkHttpClient.Builder().addInterceptor { chain -> httpResponse(chain.request()) }.build())
 
         private fun httpResponse(request: Request): Response {
-            fun response(body: String, code: Int = 200, etag: String? = null): Response =
+            fun response(body: String, code: Int = 200): Response =
                 Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(code).message("Test response")
-                    .body(body.toResponseBody()).apply { if (etag != null) header("ETag", etag) }.build()
+                    .body(body.toResponseBody()).build()
             val path = request.url.encodedPath
             if (path.endsWith("/about")) return response(JSONObject().put("user", JSONObject().put("emailAddress", email)).toString())
             if (path.endsWith("/generateIds")) return response(JSONObject().put("ids", JSONArray().put(generateFileId("http"))).toString())
@@ -483,10 +579,17 @@ class CloudSyncRecoveryTest {
                     .put("mimeType", "application/vnd.google-apps.folder").put("trashed", false).toString())
                 val file = files[id] ?: return response("{}", 404)
                 if (request.url.queryParameter("alt") == "media") {
-                    if (request.header("If-Match")?.let { it != file.etag } == true) return response("{}", 412)
+                    assertEquals("/drive/v3/files/$id", path)
+                    assertNull(request.header("If-Match"))
                     return response(file.content)
                 }
-                return response(JSONObject().put("id", id).put("version", file.revision.toString()).toString(), etag = file.etag)
+                val metadata = JSONObject().put("id", id).put("version", file.revision.toString())
+                if (path == "/drive/v2/files/$id") {
+                    assertEquals("id,etag,version", request.url.queryParameter("fields"))
+                    assertEquals("false", request.url.queryParameter("updateViewedDate"))
+                    if (!omitFileEtag) metadata.put("etag", file.etag)
+                }
+                return response(metadata.toString())
             }
             if (request.method == "POST" && path == "/drive/v3/files") {
                 val metadata = JSONObject(Buffer().also { requireNotNull(request.body).writeTo(it) }.readUtf8())
@@ -497,9 +600,23 @@ class CloudSyncRecoveryTest {
             val multipart = request.body as MultipartBody
             val metadata = JSONObject(Buffer().also { multipart.part(0).body.writeTo(it) }.readUtf8())
             val content = Buffer().also { multipart.part(1).body.writeTo(it) }.readUtf8()
-            if (request.method == "PATCH") {
-                return if (updateCollection("http", id, content, requireNotNull(request.header("If-Match")))) response(JSONObject().put("id", id).toString())
-                else response("{}", 412)
+            if (request.method != "POST") {
+                assertEquals("PUT", request.method)
+                assertEquals("/upload/drive/v2/files/$id", path)
+                conditionalWrites++
+                if (!updateCollection("http", id, content, requireNotNull(request.header("If-Match")))) return response("{}", 412)
+                metadata.optJSONArray("properties")?.let { properties ->
+                    assertFalse(metadata.has("appProperties"))
+                    val values = (0 until properties.length()).associate { index ->
+                        val property = properties.getJSONObject(index)
+                        assertEquals("PRIVATE", property.getString("visibility"))
+                        property.getString("key") to property.getString("value")
+                    }
+                    val noteId = requireNotNull(values["noteId"])
+                    val records = noteRecords.values.single { it[noteId]?.fileId == id }
+                    records[noteId] = RemoteNoteMeta(id, noteId, requireNotNull(values["updatedAt"]).toLong())
+                }
+                return response(JSONObject().put("id", id).toString())
             }
             val parent = metadata.getJSONArray("parents").getString(0)
             val created = if (parent == "appDataFolder") createAppDataFile("http", metadata.getString("name"), content)
